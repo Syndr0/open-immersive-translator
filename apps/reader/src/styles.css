@@ -244,7 +244,7 @@ h1 { font-family: 'Lora', Georgia, serif; font-weight: 500; color: var(--ink); l
 .settings-modal h3 { font-size: 11px; font-weight: 600; color: #333333; margin: 22px 0 9px; }
 .settings-modal .small-copy { font-size: 10px; line-height: 1.8; }
 .settings-modal code { color: #444444; font-size: .95em; }
-.setup-code { background: #1b1b1b; padding: 16px 18px; border-radius: 6px; font-size: 10px; line-height: 2; color: #eeeeee; white-space: pre-wrap; }
+.setup-code { background: #1b1b1b; padding: 16px 18px; border-radius: 6px; font-size: 10px; line-height: 2; color: #eeeeee; white-space: pre-wrap; overflow-wrap: anywhere; }
 .settings-modal .settings-footnote { padding-top: 17px; border-top: 1px solid #f5f5f5; font-size: 9px; color: #666666; display: flex; gap: 8px; line-height: 1.8; }
 .settings-footnote > svg { flex-shrink: 0; margin-top: 2px; }
 .modal-done { width: 100%; margin-top: 14px; }

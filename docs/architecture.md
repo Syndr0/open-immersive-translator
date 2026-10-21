@@ -6,6 +6,8 @@ Website paragraphs and document blocks become `{id, text}` segments with source/
 
 Original source content and translated overlays are stored separately. A document can be translated again without repeating parsing. Job progress records count actual units; cancellation prevents a late job from publishing a newer result. Human translation edits are saved as translated values rather than changing the parsed source.
 
+The Ollama and compatible chat adapters request identified JSON translations from an instruction model. The Google adapter calls Cloud Translation Basic v2 with plain-text arrays and maps ordered responses back to segment IDs; it needs no local model. Credentials stay in server environment variables. All adapters pass through the same protected-token validation and cache boundary. Google translates parsed blocks rather than receiving the original PDF; changing translation providers does not change document recognition or export fidelity.
+
 ## Website flow
 
 The popup invokes a content script on the active page. The script finds prose roots, excludes code, editable controls, math and its own nodes, and batches eligible paragraphs. The background worker brokers short start/status requests to asynchronous API jobs. Polling happens in the content context so a slow local model does not require a long-lived Manifest V3 worker fetch. Bilingual translations are inserted as owned adjacent nodes, leaving original DOM nodes intact. Restoration removes owned translations, disconnects observation and cancels pending jobs. Source changes and new sessions invalidate pending results.

@@ -11,7 +11,7 @@ An independent, MIT-licensed implementation of paragraph-based website translati
 - **Websites:** translate prose into a bilingual view, retain the original page, restore it, and handle newly inserted content.
 - **Interface:** switch between Chinese and English with the **中 / EN** control. Your choice is saved separately from the document translation language. [中文界面预览](docs/images/workspace-zh.png).
 - **Documents:** import text PDFs, DOCX, HTML, Markdown and TXT; translate blocks; edit translations; export bilingual HTML/Markdown or print to PDF.
-- **Providers:** local Ollama or a configured compatible chat-completion endpoint. Provider credentials stay in the backend environment.
+- **Providers:** Google Cloud Translation, local Ollama, or a configured compatible chat-completion endpoint. Provider credentials stay in the backend environment.
 - **Shared core:** protected code/math/link tokens, identified results, bounded requests, caching and explicit per-segment failures.
 - **Optional recognition:** use a Docling worker for harder PDFs. The default lightweight PDF parser reads existing text; it does not perform OCR.
 
@@ -19,7 +19,7 @@ This first version produces reflowed documents. It does not preserve the origina
 
 ## Quick start
 
-Requirements: Node.js **22.22.2+**, npm, and a running translation provider.
+Requirements: Node.js **22.22.2+**, npm, and access to a translation provider. A local language model is optional.
 
 ```sh
 git clone https://github.com/Syndr0/open-immersive-translator.git
@@ -31,13 +31,13 @@ cp .env.example .env
 For local translation, install [Ollama](https://ollama.com/), then:
 
 ```sh
-ollama pull qwen3.5:9b
+ollama pull qwen3.5:2b
 npm run dev
 ```
 
-The default local model is `qwen3.5:9b`. Change `OLLAMA_MODEL` in `.env` to select another installed instruction model. This is a setup default, not a benchmarked translation-quality recommendation. [Qwen3.5 model catalog](https://ollama.com/library/qwen3.5).
+The default local model is `qwen3.5:2b`; a 7B or larger model is not required. For a smaller download, try `ollama pull qwen3.5:0.8b` and set `OLLAMA_MODEL=qwen3.5:0.8b` in `.env`. Available memory, context length and hardware affect speed and memory use. Smaller models can make more translation or structured-output errors, especially with technical documents. These are setup options, not benchmarked translation-quality recommendations. [Qwen3.5 model catalog](https://ollama.com/library/qwen3.5).
 
-Open **http://127.0.0.1:5173** for the document workspace. The API listens on **http://127.0.0.1:8787**. Choose a target language, import a file and select Translate. A model must be installed and running for actual translation; there is no silent mock fallback.
+Open **http://127.0.0.1:5173** for the document workspace. The API listens on **http://127.0.0.1:8787**. Choose a target language, import a file and select Translate. Your selected provider must be available for actual translation; there is no silent mock fallback.
 
 For a single-server build:
 
@@ -48,7 +48,18 @@ npm start
 
 Open **http://127.0.0.1:8787**. Keep the repository dependencies installed: the API runs TypeScript through `tsx`.
 
-### Use another provider
+### Use Google Translate without a local model
+
+Use [Google Cloud Translation Basic](https://docs.cloud.google.com/translate/docs/setup): select a Cloud project, enable billing and the Cloud Translation API, then create an API key. Restrict the key to the Cloud Translation API. Set these values in your server's `.env` and restart the backend:
+
+```dotenv
+TRANSLATION_PROVIDER=google
+GOOGLE_TRANSLATE_API_KEY=your-api-key
+```
+
+Google translates extracted website paragraphs and document blocks using its hosted NMT service. No Ollama installation or local model is needed. This uses the official Cloud API, which has its own [usage pricing](https://cloud.google.com/translate/pricing); a consumer Google Translate account is not an API credential. The key stays on the backend. Source text is sent to Google when you translate. PDF recognition and reflowed export still use this project's document pipeline.
+
+### Use a compatible model API
 
 Set these values in `.env`, then restart the backend:
 

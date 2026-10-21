@@ -81,6 +81,27 @@ test('demo is explicit and real provider does not silently return fixture transl
   assert.throws(() => providerFromEnv({ TRANSLATION_PROVIDER: 'unknown' }), /must be/);
 });
 
+test('Google health reports configuration without returning the server API key', async () => {
+  for (const key of [undefined, 'test-only-google-health-key']) {
+    const dataDir = await mkdtemp(`${tmpdir()}/oit-google-health-`);
+    const api = await createApp({ dataDir, env: { TRANSLATION_PROVIDER: 'google', GOOGLE_TRANSLATE_API_KEY: key } });
+    const server = api.app.listen(0, '127.0.0.1');
+    await new Promise<void>(resolve => server.once('listening', resolve));
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      const response = await fetch(`${base}/api/health`);
+      assert.equal(response.status, 200);
+      const body = await response.text();
+      assert.deepEqual(JSON.parse(body).provider, { kind: 'google', model: 'nmt', configured: Boolean(key) });
+      assert.equal(body.includes('GOOGLE_TRANSLATE_API_KEY'), false);
+      if (key) assert.equal(body.includes(key), false);
+    } finally {
+      api.close(); await new Promise<void>(resolve => server.close(() => resolve()));
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  }
+});
+
 test('partial job failure preserves successful blocks and requires explicit partial export', async () => {
   const dataDir = await mkdtemp(`${tmpdir()}/oit-partial-test-`);
   const provider: Provider = { ...fixture, async translate(segments) {

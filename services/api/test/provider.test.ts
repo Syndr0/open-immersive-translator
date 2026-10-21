@@ -6,10 +6,10 @@ import { TranslationBroker } from '@oit/core';
 import { providerFromEnv } from '../src/provider.ts';
 
 const cases = [
-  { kind: 'ollama', name: 'default Qwen3.5 model', expectedModel: 'qwen3.5:9b', modelOverride: undefined, expectedThink: false },
+  { kind: 'ollama', name: 'default Qwen3.5 model', expectedModel: 'qwen3.5:2b', modelOverride: undefined, expectedThink: false },
   { kind: 'ollama', name: 'configured Qwen3.5 variant', expectedModel: 'qwen3.5:4b', modelOverride: 'qwen3.5:4b', expectedThink: false },
   { kind: 'ollama', name: 'arbitrary configured model', expectedModel: 'gpt-oss:20b', modelOverride: 'gpt-oss:20b', expectedThink: undefined },
-  { kind: 'compatible', name: 'configured compatible model', expectedModel: 'fixture-model', modelOverride: 'qwen3.5:9b', expectedThink: undefined },
+  { kind: 'compatible', name: 'configured compatible model', expectedModel: 'fixture-model', modelOverride: 'qwen3.5:2b', expectedThink: undefined },
 ] as const;
 
 for (const { kind, name, expectedModel, modelOverride, expectedThink } of cases) {
