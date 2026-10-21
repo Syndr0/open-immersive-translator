@@ -1,4 +1,4 @@
-import type { Provider, Segment } from '@oit/core';
+import type { Provider, ProviderResult, Segment } from '@oit/core';
 
 // This is an undocumented public web endpoint, not Google Cloud Translation.
 // Its availability and quotas are not guaranteed. No keys, cookies or tokens are used.
@@ -8,7 +8,7 @@ const MAX_CHARACTERS = 12_000;
 const MARKER = /⟪OIT_\d+⟫/g;
 
 class FreeEndpointError extends Error {
-  constructor(message: string, readonly retryable = false) { super(message); }
+  constructor(message: string, readonly retryable = false, readonly status?: number) { super(message); }
 }
 
 function languageCode(value: string): string {
@@ -20,11 +20,9 @@ function languageCode(value: string): string {
   return code;
 }
 
-function validateMarkers(source: string, translated: string): void {
+function markersMatch(source: string, translated: string): boolean {
   const tokens = (text: string) => JSON.stringify((text.match(MARKER) ?? []).sort());
-  if (tokens(source) !== tokens(translated) || /⟪OIT_/.test(translated.replace(MARKER, ''))) {
-    throw new FreeEndpointError('The unofficial Google free endpoint changed a protected math/code/link token.');
-  }
+  return tokens(source) === tokens(translated) && !/⟪OIT_/.test(translated.replace(MARKER, ''));
 }
 
 function retryDelay(signal: AbortSignal): Promise<void> {
@@ -36,13 +34,60 @@ function retryDelay(signal: AbortSignal): Promise<void> {
   });
 }
 
+/** Shape/count validation is atomic; marker validation is isolated per segment below. */
+async function requestTranslations(texts: string[], source: string, target: string, signal: AbortSignal): Promise<string[]> {
+  const url = new URL(ENDPOINT);
+  url.search = new URLSearchParams({ client: 'dict-chrome-ex', sl: source, tl: target }).toString();
+  const body = new URLSearchParams();
+  for (const text of texts) body.append('q', text);
+  let last = new FreeEndpointError('The unofficial Google free endpoint is unavailable. Try again later.');
+  for (let attempt = 0; attempt < 2; attempt++) {
+    signal.throwIfAborted();
+    try {
+      const response = await fetch(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8', 'Accept-Encoding': 'identity' },
+        body: body.toString(), signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
+      });
+      if (!response.ok) {
+        if (response.status === 429) throw new FreeEndpointError('The unofficial Google free endpoint is rate limited (HTTP 429). Wait before retrying.', false, 429);
+        throw new FreeEndpointError(`The unofficial Google free endpoint is unavailable (HTTP ${response.status}). It has no guaranteed availability; try later or choose another provider.`, response.status >= 500, response.status);
+      }
+      let envelope: unknown;
+      try { envelope = await response.json(); }
+      catch { throw new FreeEndpointError('The unofficial Google free endpoint returned invalid JSON.'); }
+      if (!Array.isArray(envelope) || envelope.length !== texts.length) throw new FreeEndpointError('The unofficial Google free endpoint returned a mismatched segment count.');
+      const translated = envelope.map((item: unknown) => {
+        let text: unknown = item;
+        if (source === 'auto') {
+          if (!Array.isArray(item) || item.length !== 2 || typeof item[1] !== 'string' || !/^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/.test(item[1])) throw new FreeEndpointError('The unofficial Google free endpoint returned an invalid detected-language result.');
+          text = item[0];
+        }
+        if (typeof text !== 'string' || !text.trim()) throw new FreeEndpointError('The unofficial Google free endpoint returned an invalid translation.');
+        // The observed endpoint returns plain strings: do not HTML-decode them.
+        return text;
+      });
+      signal.throwIfAborted();
+      return translated;
+    } catch (error) {
+      signal.throwIfAborted();
+      last = error instanceof FreeEndpointError ? error : new FreeEndpointError('Cannot reach the unofficial Google free endpoint. Check connectivity or try another provider.', true);
+      if (!last.retryable || attempt === 1) break;
+      await retryDelay(signal);
+    }
+  }
+  throw last;
+}
+
+interface FallbackPart { owner: number; index: number; text: string; before: string; after: string }
+interface FallbackPlan { source: string; parts: string[]; error?: string }
+
 /** Explicit opt-in no-key provider. Our conservative budgets are not service quotas. */
 export function googleFreeProvider(): Provider {
   return {
     kind: 'google-free', model: 'web-unofficial', configured: true,
-    cacheNamespace: 'google-free:clients5:dict-chrome-ex:plain:v1',
+    cacheNamespace: 'google-free:clients5:dict-chrome-ex:plain:local-marker-fallback:v2',
     batch: { maxSegments: MAX_SEGMENTS, maxCharacters: MAX_CHARACTERS },
-    async translate(segments: Segment[], source: string, target: string, signal: AbortSignal) {
+    async translate(segments: Segment[], source: string, target: string, signal: AbortSignal): Promise<ProviderResult[]> {
       signal.throwIfAborted();
       if (!segments.length) return [];
       if (segments.length > MAX_SEGMENTS || segments.reduce((sum, segment) => sum + segment.text.length, 0) > MAX_CHARACTERS) throw new FreeEndpointError('The unofficial Google free endpoint is limited to 32 segments and 12000 characters per application batch.');
@@ -50,47 +95,67 @@ export function googleFreeProvider(): Provider {
       const sourceCode = languageCode(source || 'auto'), targetCode = languageCode(target);
       if (targetCode === 'auto') throw new FreeEndpointError('Choose an explicit target language for the unofficial Google free endpoint.');
       if (sourceCode.toLowerCase() === targetCode.toLowerCase()) return segments.map(segment => ({ ...segment }));
-      const url = new URL(ENDPOINT);
-      url.search = new URLSearchParams({ client: 'dict-chrome-ex', sl: sourceCode, tl: targetCode }).toString();
-      const body = new URLSearchParams();
-      for (const segment of segments) body.append('q', segment.text);
-      let last = new FreeEndpointError('The unofficial Google free endpoint is unavailable. Try again later.');
-      for (let attempt = 0; attempt < 2; attempt++) {
+      const outputs: ProviderResult[] = segments.map(segment => ({ ...segment }));
+      const remote = segments.map((segment, index) => ({ ...segment, index })).filter(segment => /\p{L}/u.test(segment.text.replace(MARKER, '')));
+      // Marker-only/numeric/punctuation units need no remote request.
+      if (!remote.length) return outputs;
+      const translated = await requestTranslations(remote.map(segment => segment.text), sourceCode, targetCode, signal);
+      const plans = new Map<number, FallbackPlan>();
+      const parts: FallbackPart[] = [];
+      remote.forEach((segment, index) => {
+        const text = translated[index]!;
+        if (markersMatch(segment.text, text)) { outputs[segment.index] = { id: segment.id, text }; return; }
+        // Keep identities local if the public endpoint rewrites even one marker.
+        // Whitespace and punctuation-only spans stay exactly as written in source.
+        const plan: FallbackPlan = { source: segment.text, parts: segment.text.split(/(⟪OIT_\d+⟫)/g) };
+        plans.set(segment.index, plan);
+        plan.parts.forEach((part, partIndex) => {
+          if (/^⟪OIT_\d+⟫$/.test(part) || !/\p{L}/u.test(part)) return;
+          const before = part.match(/^\s*/)?.[0] || '', after = part.match(/\s*$/)?.[0] || '';
+          const prose = part.slice(before.length, part.length - after.length);
+          if (prose) parts.push({ owner: segment.index, index: partIndex, text: prose, before, after });
+        });
+      });
+      const groups: FallbackPart[][] = [];
+      let group: FallbackPart[] = [], characters = 0;
+      for (const part of parts) {
+        if (group.length && (group.length >= MAX_SEGMENTS || characters + part.text.length > MAX_CHARACTERS)) { groups.push(group); group = []; characters = 0; }
+        group.push(part); characters += part.text.length;
+      }
+      if (group.length) groups.push(group);
+      // Sequential fallback groups preserve the broker's global two-request cap.
+      for (const candidates of groups) {
         signal.throwIfAborted();
+        const active = candidates.filter(part => !plans.get(part.owner)!.error);
+        if (!active.length) continue;
         try {
-          const response = await fetch(url, {
-            method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-            body: body.toString(), signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
+          const fallback = await requestTranslations(active.map(part => part.text), sourceCode, targetCode, signal);
+          active.forEach((part, index) => {
+            const text = fallback[index]!;
+            const plan = plans.get(part.owner)!;
+            if (/⟪OIT_/.test(text)) { plan.error = 'The unofficial Google free endpoint inserted a protected token into plain-text recovery.'; return; }
+            plan.parts[part.index] = part.before + text.trim() + part.after;
           });
-          if (!response.ok) {
-            if (response.status === 429) throw new FreeEndpointError('The unofficial Google free endpoint is rate limited (HTTP 429). Wait before retrying.');
-            throw new FreeEndpointError(`The unofficial Google free endpoint is unavailable (HTTP ${response.status}). It has no guaranteed availability; try later or choose another provider.`, response.status >= 500);
-          }
-          let envelope: unknown;
-          try { envelope = await response.json(); }
-          catch { throw new FreeEndpointError('The unofficial Google free endpoint returned invalid JSON.'); }
-          if (!Array.isArray(envelope) || envelope.length !== segments.length) throw new FreeEndpointError('The unofficial Google free endpoint returned a mismatched segment count.');
-          const translated = envelope.map((item: unknown, index: number) => {
-            let text: unknown = item;
-            if (sourceCode === 'auto') {
-              if (!Array.isArray(item) || item.length !== 2 || typeof item[1] !== 'string' || !/^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/.test(item[1])) throw new FreeEndpointError('The unofficial Google free endpoint returned an invalid detected-language result.');
-              text = item[0];
-            }
-            if (typeof text !== 'string' || !text.trim()) throw new FreeEndpointError('The unofficial Google free endpoint returned an invalid translation.');
-            validateMarkers(segments[index]!.text, text);
-            // The observed endpoint returns plain strings: do not HTML-decode them.
-            return { id: segments[index]!.id, text };
-          });
-          signal.throwIfAborted();
-          return translated;
         } catch (error) {
           signal.throwIfAborted();
-          last = error instanceof FreeEndpointError ? error : new FreeEndpointError('Cannot reach the unofficial Google free endpoint. Check connectivity or try another provider.', true);
-          if (!last.retryable || attempt === 1) break;
-          await retryDelay(signal);
+          const message = error instanceof FreeEndpointError ? error.message : 'The unofficial Google free endpoint could not safely recover this paragraph.';
+          for (const part of active) plans.get(part.owner)!.error = message;
+          if (error instanceof FreeEndpointError && error.status === 429) {
+            // A shared endpoint quota applies to the remaining recovery groups too.
+            for (const plan of plans.values()) plan.error ||= message;
+            break;
+          }
         }
       }
-      throw last;
+      for (const [index, plan] of plans) {
+        signal.throwIfAborted();
+        const text = plan.parts.join('');
+        outputs[index] = plan.error || !markersMatch(plan.source, text)
+          ? { id: segments[index]!.id, error: plan.error || 'The unofficial Google free endpoint could not preserve protected math/code/link tokens.' }
+          : { id: segments[index]!.id, text };
+      }
+      signal.throwIfAborted();
+      return outputs;
     },
   };
 }

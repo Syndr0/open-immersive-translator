@@ -1,4 +1,6 @@
 export interface Segment { id: string; text: string }
+/** An adapter can fail one identified segment while retaining successful peers. */
+export type ProviderResult = Segment | { id: string; error: string };
 export interface TranslationRequest {
   segments: Segment[];
   sourceLanguage?: string;
@@ -47,7 +49,7 @@ export interface Provider {
   cacheNamespace?: string;
   /** Opt in to identified multi-segment calls; maxCharacters must be at least 2. */
   batch?: { maxSegments: number; maxCharacters: number };
-  translate(segments: Segment[], source: string, target: string, signal: AbortSignal): Promise<Segment[]>;
+  translate(segments: Segment[], source: string, target: string, signal: AbortSignal): Promise<ProviderResult[]>;
 }
 export interface TranslationCache {
   get(key: string): string | undefined;

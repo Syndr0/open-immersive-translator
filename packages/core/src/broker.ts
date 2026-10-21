@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { protect, restore, splitText } from './protection.ts';
-import type { Provider, TranslationCache, TranslationRequest, TranslationResponse, TranslationResult } from './types.ts';
+import type { Provider, ProviderResult, TranslationCache, TranslationRequest, TranslationResponse, TranslationResult } from './types.ts';
 
 export class MemoryCache implements TranslationCache {
   private values = new Map<string, string>();
@@ -85,17 +85,22 @@ export class TranslationBroker {
           const outputs = await this.provider.translate(pending.map(({ id, text }) => ({ id, text })), request.sourceLanguage ?? 'auto', request.targetLanguage, signal);
           signal.throwIfAborted();
           const expected = new Set(pending.map(chunk => chunk.id));
-          const byId = new Map<string, string>();
+          const byId = new Map<string, ProviderResult>();
           if (!Array.isArray(outputs) || outputs.length !== pending.length) throw new Error('Provider returned missing, duplicate or mismatched segment IDs');
           for (const output of outputs) {
-            if (!output || typeof output.id !== 'string' || typeof output.text !== 'string' || !output.text.trim() || !expected.has(output.id) || byId.has(output.id)) throw new Error('Provider returned missing, duplicate or mismatched segment IDs');
-            byId.set(output.id, output.text);
+            if (!output || typeof output.id !== 'string' || !expected.has(output.id) || byId.has(output.id)) throw new Error('Provider returned missing, duplicate or mismatched segment IDs');
+            if ('error' in output) {
+              if (typeof output.error !== 'string' || !output.error.trim() || 'text' in output) throw new Error('Provider returned an invalid segment error');
+            } else if (typeof output.text !== 'string' || !output.text.trim()) throw new Error('Provider returned missing, duplicate or mismatched segment IDs');
+            byId.set(output.id, output);
           }
           for (const chunk of pending) {
             const work = chunk.work;
             if (work.settled) continue;
             try {
-              const text = byId.get(chunk.id)!;
+              const output = byId.get(chunk.id)!;
+              if ('error' in output) throw new Error(output.error);
+              const text = output.text;
               // Validate each identified chunk before combining the original block.
               const markers = (value: string) => JSON.stringify((value.match(/⟪OIT_\d+⟫/g) ?? []).sort());
               if (markers(text) !== markers(chunk.text)) throw new Error('Provider changed or omitted a protected math/code/link token');

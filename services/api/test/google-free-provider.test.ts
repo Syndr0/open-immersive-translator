@@ -22,7 +22,7 @@ test('free Google batches repeated q at a fixed endpoint without credentials or 
   assert.deepEqual([...requests[0]!.url.searchParams], [['client', 'dict-chrome-ex'], ['sl', 'en'], ['tl', 'fr']]);
   assert.equal(requests[0]!.method, 'POST');
   assert.deepEqual(requests[0]!.queries, ['Hello ⟪OIT_0⟫ &amp; text', 'Second']);
-  assert.deepEqual([...requests[0]!.headers], [['content-type', 'application/x-www-form-urlencoded;charset=UTF-8']]);
+  assert.deepEqual([...requests[0]!.headers], [['accept-encoding', 'identity'], ['content-type', 'application/x-www-form-urlencoded;charset=UTF-8']]);
 });
 
 test('free Google maps Chinese variants and interprets auto language result pairs', async context => {
@@ -76,10 +76,15 @@ for (const [name, translated] of [
   ['lost marker', 'Aucun marqueur'], ['duplicated marker', '⟪OIT_0⟫ ⟪OIT_0⟫'],
   ['invented marker', '⟪OIT_0⟫ ⟪OIT_1⟫'], ['malformed marker', '⟪OIT_0⟫ ⟪OIT_broken⟫'],
 ] as const) {
-  test(`free Google rejects ${name}`, async context => {
-    const fetch = context.mock.method(globalThis, 'fetch', async () => json([[translated, 'en']]));
-    await assert.rejects(() => provider().translate([{ id: 'a', text: 'Keep ⟪OIT_0⟫' }], 'auto', 'fr', signal()), /protected math\/code\/link token/);
-    assert.equal(fetch.mock.callCount(), 1);
+  test(`free Google recovers a ${name} without losing valid peers`, async context => {
+    const batches: string[][] = [];
+    context.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
+      const queries = new URLSearchParams(String(init?.body)).getAll('q'); batches.push(queries);
+      return json(batches.length === 1 ? [['Un titre correct', 'en'], [translated, 'en']] : [['Conserver', 'en']]);
+    });
+    const result = await provider().translate([{ id: 'title', text: 'A valid title' }, { id: 'a', text: 'Keep ⟪OIT_0⟫' }], 'auto', 'fr', signal());
+    assert.deepEqual(result, [{ id: 'title', text: 'Un titre correct' }, { id: 'a', text: 'Conserver ⟪OIT_0⟫' }]);
+    assert.deepEqual(batches, [['A valid title', 'Keep ⟪OIT_0⟫'], ['Keep']]);
   });
 }
 
@@ -127,4 +132,100 @@ test('free Google rejects oversized or invalid direct batches before fetching', 
   ]) await assert.rejects(() => provider().translate(segments, 'auto', 'fr', signal()));
   await assert.rejects(() => provider().translate([{ id: 'a', text: 'Hello' }], 'en', 'auto', signal()), /explicit target/);
   assert.equal(fetch.mock.callCount(), 0);
+});
+
+test('recovery retains exact inline identities, punctuation and whitespace while translating only prose', async context => {
+  const batches: string[][] = [];
+  context.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
+    const queries = new URLSearchParams(String(init?.body)).getAll('q'); batches.push(queries);
+    return json(batches.length === 1 ? ['Bad output without markers'] : ['Lire', 'cette recherche', ',\n garder']);
+  });
+  const source = 'Read ⟪OIT_0⟫this research⟪OIT_1⟫,\n keep ⟪OIT_2⟫.';
+  const result = await provider().translate([{ id: 'paragraph', text: source }], 'en', 'fr', signal());
+  assert.deepEqual(result, [{ id: 'paragraph', text: 'Lire ⟪OIT_0⟫cette recherche⟪OIT_1⟫,\n garder ⟪OIT_2⟫.' }]);
+  assert.deepEqual(batches, [[source], ['Read', 'this research', ',\n keep']]);
+});
+
+test('recovery rate limits affect only the failed paragraph and successful peers remain cached', async context => {
+  let calls = 0;
+  context.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
+    calls++;
+    const queries = new URLSearchParams(String(init?.body)).getAll('q');
+    if (calls === 1) return json(queries.map((text, index) => [index === 0 ? 'Titre correct' : 'Missing marker', 'en']));
+    if (calls === 2) return json({ error: 'Private diagnostic' }, 429);
+    return json(queries.map(text => [`Traduit: ${text}`, 'en']));
+  });
+  const broker = new TranslationBroker(provider());
+  const request = { targetLanguage: 'fr', segments: [{ id: 'title', text: 'A valid title' }, { id: 'paragraph', text: 'Keep `code()` unchanged.' }, { id: 'alias', text: 'Keep `code()` unchanged.' }] };
+  const first = await broker.translate(request);
+  assert.deepEqual(first.results.map(result => result.id), ['title']);
+  assert.deepEqual(first.errors.map(error => error.id), ['paragraph', 'alias']);
+  assert.ok(first.errors.every(error => /rate limited/.test(error.message) && !error.message.includes('Private')));
+  assert.equal(calls, 2, 'rate limiting must not trigger immediate repeated recovery');
+  const retry = await broker.translate(request);
+  assert.deepEqual(retry.errors, []);
+  assert.deepEqual(retry.results.map(result => result.cached), [true, false, false]);
+  assert.ok(retry.results[1]!.text.includes('`code()`'));
+  assert.equal(calls, 3);
+});
+
+test('malformed or invented recovery results fail only their owner without leaking raw data', async context => {
+  for (const recovery of [[], [['Invented ⟪OIT_999⟫', 'en']]]) {
+    let calls = 0;
+    context.mock.method(globalThis, 'fetch', async () => json(++calls === 1 ? [['Titre', 'en'], ['Lost marker', 'en']] : recovery));
+    const result = await provider().translate([{ id: 'title', text: 'A valid title' }, { id: 'bad', text: 'Keep ⟪OIT_0⟫.' }], 'auto', 'fr', signal());
+    assert.deepEqual(result[0], { id: 'title', text: 'Titre' });
+    assert.equal(result[1]!.id, 'bad');
+    assert.ok('error' in result[1]!);
+    assert.equal(calls, 2);
+    context.mock.restoreAll();
+  }
+});
+
+test('recovery batches more than 32 prose fragments without transmitting protected markers', async context => {
+  const source = Array.from({ length: 40 }, (_, i) => `word${i}⟪OIT_${i}⟫ `).join('');
+  const batches: string[][] = [];
+  context.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
+    const queries = new URLSearchParams(String(init?.body)).getAll('q'); batches.push(queries);
+    return json(batches.length === 1 ? ['Lost markers'] : queries.map(text => `fr:${text}`));
+  });
+  const result = await provider().translate([{ id: 'many-links', text: source }], 'en', 'fr', signal());
+  assert.deepEqual(batches.map(batch => batch.length), [1, 32, 8]);
+  assert.ok(batches.slice(1).flat().every(text => !text.includes('⟪OIT_')));
+  assert.deepEqual(result, [{ id: 'many-links', text: Array.from({ length: 40 }, (_, i) => `fr:word${i}⟪OIT_${i}⟫ `).join('') }]);
+});
+
+test('marker-only and punctuation units stay local without a provider request', async context => {
+  const fetch = context.mock.method(globalThis, 'fetch', async () => { throw new Error('Do not send protected-only input'); });
+  const segments = [{ id: 'math', text: '⟪OIT_0⟫, ⟪OIT_1⟫.' }, { id: 'numeric', text: '1234 / 5678' }];
+  assert.deepEqual(await provider().translate(segments, 'auto', 'fr', signal()), segments);
+  assert.equal(fetch.mock.callCount(), 0);
+});
+
+test('Restore aborts token recovery and discards even completed primary peers', async context => {
+  const controller = new AbortController();
+  let release!: (response: Response) => void;
+  let calls = 0;
+  context.mock.method(globalThis, 'fetch', async () => ++calls === 1
+    ? json([['Titre', 'en'], ['Lost token', 'en']])
+    : new Promise<Response>(resolve => { release = resolve; }));
+  const pending = provider().translate([{ id: 'title', text: 'A title' }, { id: 'bad', text: 'Keep ⟪OIT_0⟫' }], 'auto', 'fr', controller.signal);
+  while (!release) await new Promise(resolve => setImmediate(resolve));
+  controller.abort(new Error('Restored during token recovery'));
+  release(json([['Conserver', 'en']]));
+  await assert.rejects(pending, /Restored during token recovery/);
+  assert.equal(calls, 2);
+});
+
+test('a shared recovery rate limit stops requests for later paragraph groups', async context => {
+  let calls = 0;
+  context.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
+    calls++;
+    const queries = new URLSearchParams(String(init?.body)).getAll('q');
+    return calls === 1 ? json(queries.map(() => 'Missing markers')) : json({}, 429);
+  });
+  const source = (count: number) => Array.from({ length: count }, (_, i) => `word${i}⟪OIT_${i}⟫ `).join('');
+  const result = await provider().translate([{ id: 'first', text: source(33) }, { id: 'later', text: source(16) }], 'en', 'fr', signal());
+  assert.equal(calls, 2);
+  assert.ok(result.every(item => 'error' in item && /rate limited/.test(item.error)));
 });

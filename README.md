@@ -62,7 +62,7 @@ Set this backend value in `.env`, then restart the API:
 TRANSLATION_PROVIDER=google-free
 ```
 
-This opt-in adapter sends text to Google's **unofficial web translation endpoint**. It needs no account, API key, model download or billing setup. It batches up to 32 strings within a conservative 12,000-character request budget, validates the response and preserves protected math, code and links. These are this application's bounds, not a published Google quota. Both documents and the extension use it through the same local backend.
+This opt-in adapter sends text to Google's **unofficial web translation endpoint**. It needs no account, API key, model download or billing setup. It batches up to 32 strings within a conservative 12,000-character request budget, validates the response and preserves protected math, code and links. These are this application's bounds, not a published Google quota. Both documents and the extension use it through the same local backend. If Google changes a protected token, the adapter translates the surrounding prose and restores the identities locally. Valid paragraphs are retained if recovery fails for another paragraph. Translating separate prose fragments can reduce fluency around inline formatting.
 
 This endpoint is undocumented: availability and rate limits can change, and it is not a guaranteed, unlimited free API. Throttling and failures are reported; the app never falls back to Codex or a paid provider. For a supported API, configure Google Cloud below or another provider you control.
 

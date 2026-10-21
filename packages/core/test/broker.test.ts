@@ -272,3 +272,160 @@ test('progress observer exceptions do not change results or poison cached output
   assert.deepEqual(first.errors, []);
   assert.ok((await broker.translate(request)).results.every(result => result.cached));
 });
+
+test('explicit provider errors fail only their aliases while successful peers are cached and failures remain retryable', async () => {
+  let unavailable = true;
+  const calls: Segment[][] = [];
+  const provider: Provider = { kind: 'batch-errors', model: 'v1', configured: true, batch: { maxSegments: 8, maxCharacters: 12_000 },
+    async translate(segments) {
+      calls.push(segments);
+      return segments.map(segment => unavailable && segment.text.includes('Unavailable')
+        ? { id: segment.id, error: 'Fixture translation unavailable.' }
+        : { ...segment, text: `fr: ${segment.text}` }).reverse();
+    } };
+  const broker = new TranslationBroker(provider);
+  const request = { segments: [{ id: 'bad', text: 'Unavailable `code` paragraph' }, { id: 'good', text: 'Available $x$ paragraph' }, { id: 'bad-alias', text: 'Unavailable `code` paragraph' }, { id: 'good-alias', text: 'Available $x$ paragraph' }], targetLanguage: 'fr' };
+  const snapshots: TranslationResponse[] = [];
+  const first = await broker.translate(request, undefined, snapshot => {
+    snapshots.push(structuredClone(snapshot));
+    if (snapshot.errors[0]) snapshot.errors[0].message = 'observer mutation';
+  });
+  assert.deepEqual(first.results.map(result => result.id), ['good', 'good-alias']);
+  assert.ok(first.results.every(result => result.text === 'fr: Available $x$ paragraph'));
+  assert.deepEqual(first.errors, [{ id: 'bad', message: 'Fixture translation unavailable.' }, { id: 'bad-alias', message: 'Fixture translation unavailable.' }]);
+  assert.ok(snapshots.some(snapshot => snapshot.errors.length === 2));
+  assert.deepEqual(snapshots.at(-1), first);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]!.length, 2);
+
+  const retry = await broker.translate(request);
+  assert.deepEqual(retry.results.map(result => result.cached), [true, true]);
+  assert.deepEqual(retry.errors, first.errors);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1]!.length, 1);
+  assert.match(calls[1]![0]!.text, /Unavailable/);
+  unavailable = false;
+  const recovered = await broker.translate(request);
+  assert.deepEqual(recovered.errors, []);
+  assert.deepEqual(recovered.results.map(result => result.cached), [false, true, false, true]);
+  assert.equal(calls.length, 3);
+  assert.equal(calls[2]!.length, 1);
+  assert.ok((await broker.translate(request)).results.every(result => result.cached));
+  assert.equal(calls.length, 3);
+});
+
+test('an explicit failed long chunk cannot cache a partially translated block or its duplicate aliases', async () => {
+  let failMiddle = true;
+  const calls: Segment[][] = [];
+  const provider: Provider = { kind: 'chunk-errors', model: 'v1', configured: true, batch: { maxSegments: 8, maxCharacters: 12_000 },
+    async translate(segments) {
+      calls.push(segments);
+      return segments.map(segment => failMiddle && segment.id === 'long:1'
+        ? { id: segment.id, error: 'The middle chunk is unavailable.' }
+        : { ...segment }).reverse();
+    } };
+  const broker = new TranslationBroker(provider);
+  const long = `${'Long paragraph words. '.repeat(360)}Keep \`code()\` and $E=mc^2$.`;
+  const request = { segments: [{ id: 'long', text: long }, { id: 'peer', text: 'A complete peer with `code`.' }, { id: 'alias', text: long }], targetLanguage: 'fr' };
+  const snapshots: TranslationResponse[] = [];
+  const first = await broker.translate(request, undefined, snapshot => { snapshots.push(snapshot); });
+  assert.deepEqual(first.results.map(result => result.id), ['peer']);
+  assert.deepEqual(first.errors, [{ id: 'long', message: 'The middle chunk is unavailable.' }, { id: 'alias', message: 'The middle chunk is unavailable.' }]);
+  assert.ok(snapshots.every(snapshot => snapshot.results.every(result => !['long', 'alias'].includes(result.id))));
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0]!.some(segment => segment.id === 'long:0'));
+  assert.ok(calls[0]!.some(segment => segment.id === 'long:2'));
+  assert.equal(calls[0]!.some(segment => segment.id.startsWith('alias:')), false);
+
+  failMiddle = false;
+  const recovered = await broker.translate(request);
+  assert.deepEqual(recovered.errors, []);
+  assert.deepEqual(recovered.results.map(result => result.cached), [false, true, false]);
+  assert.equal(recovered.results[0]!.text, long);
+  assert.equal(recovered.results[2]!.text, long);
+  assert.equal(calls.length, 2);
+  assert.ok(calls[1]!.every(segment => segment.id.startsWith('long:')));
+  assert.ok(calls[1]!.some(segment => segment.id === 'long:0'), 'successful chunks of a failed original block must also be retried');
+  assert.ok((await broker.translate(request)).results.every(result => result.cached));
+  assert.equal(calls.length, 2);
+});
+
+for (const malformed of [
+  { name: 'non-string error', value: { error: 42 } },
+  { name: 'blank error', value: { error: ' \n ' } },
+  { name: 'null error', value: { error: null } },
+  { name: 'both text and error', value: { text: 'Ambiguous success', error: 'Ambiguous failure' } },
+] as const) {
+  test(`a ${malformed.name} envelope fails atomically before caching a preceding valid peer`, async () => {
+    let invalid = true;
+    const calls: Segment[][] = [];
+    const provider: Provider = { kind: 'malformed-errors', model: 'v1', configured: true, batch: { maxSegments: 8, maxCharacters: 12_000 },
+      async translate(segments) {
+        calls.push(segments);
+        return segments.map((segment, index) => invalid && index === 1 ? { id: segment.id, ...malformed.value } : { ...segment }) as unknown as Awaited<ReturnType<Provider['translate']>>;
+      } };
+    const broker = new TranslationBroker(provider);
+    const request = { segments: [{ id: 'valid-first', text: 'Valid peer `code`' }, { id: 'invalid-second', text: 'Invalid peer $x$' }], targetLanguage: 'fr' };
+    const result = await broker.translate(request);
+    assert.deepEqual(result.results, []);
+    assert.deepEqual(result.errors.map(error => error.id), ['valid-first', 'invalid-second']);
+    assert.equal(calls.length, 1, 'malformed output must not trigger hidden retries');
+    invalid = false;
+    const recovered = await broker.translate(request);
+    assert.deepEqual(recovered.errors, []);
+    assert.deepEqual(recovered.results.map(result => result.cached), [false, false]);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[1]!.length, 2, 'the earlier valid peer must not have entered cache from the malformed batch');
+    assert.ok((await broker.translate(request)).results.every(result => result.cached));
+    assert.equal(calls.length, 2);
+  });
+}
+
+test('explicit error entries still require the exact unique batch ID set', async () => {
+  for (const wrongId of ['unknown', 'duplicate']) {
+    let invalid = true, calls = 0;
+    const provider: Provider = { kind: 'wrong-error-id', model: 'v1', configured: true, batch: { maxSegments: 8, maxCharacters: 12_000 },
+      async translate(segments) {
+        calls++;
+        return invalid ? [{ ...segments[0]! }, { id: wrongId === 'unknown' ? 'not-requested' : segments[0]!.id, error: 'Unavailable' }] : segments;
+      } };
+    const broker = new TranslationBroker(provider);
+    const request = { segments: [{ id: 'a', text: 'First' }, { id: 'b', text: 'Second' }], targetLanguage: 'fr' };
+    const result = await broker.translate(request);
+    assert.deepEqual(result.results, []);
+    assert.deepEqual(result.errors.map(error => error.id), ['a', 'b']);
+    assert.equal(calls, 1);
+    invalid = false;
+    const recovered = await broker.translate(request);
+    assert.ok(recovered.results.every(result => result.cached === false));
+    assert.equal(calls, 2);
+  }
+});
+
+test('cancellation discards late explicit failures and successful peers without caching either', async () => {
+  let release!: () => void;
+  let first = true, calls = 0;
+  const provider: Provider = { kind: 'cancel-errors', model: 'v1', configured: true, batch: { maxSegments: 8, maxCharacters: 12_000 },
+    async translate(segments) {
+      calls++;
+      if (first) {
+        first = false;
+        await new Promise<void>(resolve => { release = resolve; });
+        return [{ ...segments[0]! }, { id: segments[1]!.id, error: 'Late provider failure' }];
+      }
+      return segments;
+    } };
+  const broker = new TranslationBroker(provider);
+  const request = { segments: [{ id: 'good', text: 'Good paragraph' }, { id: 'bad', text: 'Unavailable paragraph' }], targetLanguage: 'fr' };
+  const controller = new AbortController();
+  const pending = broker.translate(request, controller.signal);
+  controller.abort(new Error('Request cancelled before provider completion')); release();
+  const result = await pending;
+  assert.deepEqual(result.results, []);
+  assert.deepEqual(result.errors.map(error => error.id), ['good', 'bad']);
+  assert.ok(result.errors.every(error => /cancelled before provider completion/.test(error.message)));
+  const recovered = await broker.translate(request);
+  assert.deepEqual(recovered.errors, []);
+  assert.ok(recovered.results.every(result => result.cached === false));
+  assert.equal(calls, 2);
+});
