@@ -1,8 +1,12 @@
 [data-oit-owned].oit-translation {
+  --oit-border: #bdbdbd;
+  --oit-surface: #f5f5f5;
+  --oit-text: #222;
+  --oit-accent: #b31b1b;
   display: block !important;
   margin: .45em 0 .85em !important;
   padding: .1em 0 .1em .8em !important;
-  border-left: 2px solid #a6b4b3 !important;
+  border-left: 2px solid var(--oit-border) !important;
   color: inherit !important;
   opacity: .86;
   font: inherit !important;
@@ -12,6 +16,6 @@
   overflow-wrap: anywhere;
   text-align: start;
 }
-[data-oit-owned].oit-accent { border-left-color: #087f78 !important; background: #0b92890a; padding: .4em .65em !important; }
-[data-oit-owned].oit-error { font-size: .8em !important; opacity: .65; border-left-color: #b28b4d !important; }
+[data-oit-owned].oit-accent { border-left-color: var(--oit-accent) !important; background: var(--oit-surface); color: var(--oit-text) !important; padding: .4em .65em !important; }
+[data-oit-owned].oit-error { font-size: .8em !important; opacity: .65; border-left-color: var(--oit-accent) !important; }
 [data-oit-owned] code { white-space: pre-wrap; }
