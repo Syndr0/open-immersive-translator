@@ -272,12 +272,12 @@ function ReaderApp() {
       <main className="main-workspace">
         <header className="topbar">
           <div className="breadcrumbs"><button className="icon-button mobile-menu" aria-label={t('openLibrary')} onClick={() => setMobileSidebar(true)}><Menu size={20} /></button><span>{t('workspace')}</span><ChevronRight size={13} /><strong>{t('documents')}</strong></div>
-          <div className="topbar-right"><div className="language-switch" role="group" aria-label={t('interfaceLanguage')}><button type="button" data-testid="ui-language-zh" aria-pressed={locale === 'zh'} lang="zh-CN" onClick={() => setLocale('zh')}>中</button><button type="button" data-testid="ui-language-en" aria-pressed={locale === 'en'} lang="en" onClick={() => setLocale('en')}>EN</button></div><span className="open-badge"><span />{t('madeOpen')}</span><button className="icon-button" aria-label={t('translationSettings')} onClick={() => setPanel('settings')}><Settings2 size={18} /></button><span className="avatar" aria-label={t('localWorkspace')}>O</span></div>
+          <div className="topbar-right"><div className="language-switch" role="group" aria-label={t('interfaceLanguage')}><button type="button" data-testid="ui-language-zh" aria-pressed={locale === 'zh'} lang="zh-CN" onClick={() => setLocale('zh')}>中</button><button type="button" data-testid="ui-language-en" aria-pressed={locale === 'en'} lang="en" onClick={() => setLocale('en')}>EN</button></div><button className="icon-button" aria-label={t('translationSettings')} onClick={() => setPanel('settings')}><Settings2 size={18} /></button><span className="avatar" aria-label={t('localWorkspace')}>O</span></div>
         </header>
 
         <div className="workspace-content">
           <div className="page-heading">
-            <div><div className="eyebrow"><span />{t('barrierFree')}</div><h1>{t('documentTranslation')}<span>.</span></h1><p>{t('documentSubtitle')}</p></div>
+            <div><h1>{t('documentTranslation')}<span>.</span></h1><p>{t('documentSubtitle')}</p></div>
             {document && <button className="button secondary new-document" onClick={() => fileInput.current?.click()} disabled={!!busy}><Plus size={16} />{t('newDocument')}</button>}
           </div>
 
