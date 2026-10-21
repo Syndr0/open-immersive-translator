@@ -1,0 +1,30 @@
+:root { color-scheme: light; font: 14px/1.5 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; color: #183a37; background: #f7f9f6; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+.popup { width: 340px; }
+header { padding: 22px 22px 16px; display: flex; gap: 12px; align-items: center; }
+.logo { display: grid; place-items: center; flex-shrink: 0; width: 42px; height: 42px; background: #0b625b; color: white; font-size: 24px; border-radius: 13px 13px 13px 3px; }
+h1 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -.4px; }
+header p { margin: 3px 0 0; color: #6e817d; font-size: 11px; }
+main { padding: 0 22px 16px; }
+.connection { color: #6e817d; background: #eaf0eb; border: 1px solid #dee7df; padding: 9px 11px; border-radius: 8px; font-size: 12px; margin-bottom: 17px; overflow-wrap: anywhere; }
+.connection.ok { color: #0b625b; }
+label { display: block; color: #4b625d; font-size: 12px; font-weight: 600; margin: 15px 0 6px; }
+input,select { width: 100%; border: 1px solid #cbd8d0; border-radius: 8px; padding: 10px 11px; background: #fff; color: #183a37; font: inherit; }
+input:focus,select:focus { outline: 2px solid #62ada3; outline-offset: 1px; }
+button { cursor: pointer; border: 0; border-radius: 8px; font: inherit; padding: 11px 12px; }
+button:disabled { opacity: .55; cursor: wait; }
+.primary { background: #0b625b; color: #fff; width: 100%; margin-top: 14px; font-weight: 600; }
+.primary:hover { background: #084e48; }
+.secondary { width: 100%; color: #4b625d; background: #e9efea; margin-top: 8px; }
+.status { font-size: 12px; color: #6e817d; margin-bottom: 7px; }
+.error { font-size: 12px; color: #a44931; overflow-wrap: anywhere; }
+.divider { height: 1px; background: #dce5dd; margin: 17px 0 9px; }
+.text-button { width: 100%; background: transparent; color: #0b625b; text-align: left; font-size: 12px; padding: 8px 0; }
+footer { padding: 10px 22px 16px; color: #87958f; font-size: 10px; }
+.options { max-width: 720px; margin: 40px auto; padding: 20px; }
+.options header { padding-left: 0; }
+.options main { padding-left: 0; }
+.help { font-size: 12px; color: #6e817d; margin: 6px 0 20px; }
+.options aside { border-top: 1px solid #dce5dd; margin-top: 30px; padding-top: 20px; color: #6e817d; }
+.options h2 { font-size: 15px; color: #183a37; }

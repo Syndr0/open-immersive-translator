@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Settings · Open Immersive Translator</title><link rel="stylesheet" href="ui.css"></head>
+<body class="options"><header><span class="logo">文</span><div><h1>Make it yours</h1><p>Open Immersive Translator settings</p></div></header><main>
+  <form id="form"><label for="backend">Translation server</label><input id="backend" type="url" placeholder="http://127.0.0.1:8787" required><p class="help">Run the project's local API. Provider credentials are configured on that server, never in this extension. This release connects to localhost only.</p>
+  <label for="reader-url">Document app</label><input id="reader-url" type="url" placeholder="http://localhost:5173" required>
+  <label for="target">Target language</label><input id="target" placeholder="zh-Hans" required><p class="help">A language tag such as en, zh-Hans, ja, es, or ar.</p>
+  <label for="source">Source language</label><input id="source" placeholder="auto" required>
+  <label for="theme">Bilingual style</label><select id="theme"><option value="subtle">Subtle divider</option><option value="accent">Teal accent</option></select>
+  <button class="primary" type="submit">Save settings</button><p id="message" role="status"></p></form>
+  <aside><h2>How it works</h2><p>Click the toolbar button on a website, then choose Translate. Only that tab is granted access. Code and equations are protected; the original content remains available. Reloading the page clears the translation.</p><p>Chrome internal pages, the Chrome Web Store, browser PDF views, shadow-root content, and inaccessible frames cannot be translated through this DOM workflow. For production, set Document app to http://127.0.0.1:8787.</p></aside>
+</main><script src="options.js"></script></body></html>

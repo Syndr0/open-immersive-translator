@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Open Immersive Translator</title><link rel="stylesheet" href="ui.css"></head>
+<body class="popup"><header><span class="logo">文</span><div><h1>Open Immersive</h1><p>Your words. Your translation engine.</p></div></header>
+<main>
+  <div id="connection" class="connection" role="status">Checking local server…</div>
+  <label for="language">Translate into</label>
+  <select id="language"><option value="zh-Hans">简体中文</option><option value="zh-Hant">繁體中文</option><option value="en">English</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="es">Español</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="pt">Português</option><option value="ar">العربية</option></select>
+  <button id="translate" class="primary">Translate this page</button>
+  <button id="restore" class="secondary">Restore original</button>
+  <p id="status" class="status" aria-live="polite">The original page stays intact.</p>
+  <p id="error" class="error" role="alert"></p>
+  <div class="divider"></div>
+  <button id="reader" class="text-button">↗ Open document translator</button>
+  <button id="settings" class="text-button">Settings</button>
+</main><footer>Only text from pages you choose is translated.</footer><script src="popup.js"></script></body></html>
