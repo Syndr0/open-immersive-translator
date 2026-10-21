@@ -9,6 +9,7 @@ An independent, MIT-licensed implementation of paragraph-based website translati
 ## What works
 
 - **Websites:** translate prose into a bilingual view, retain the original page, restore it, and handle newly inserted content.
+- **Interface:** switch between Chinese and English with the **中 / EN** control. Your choice is saved separately from the document translation language. [中文界面预览](docs/images/workspace-zh.png).
 - **Documents:** import text PDFs, DOCX, HTML, Markdown and TXT; translate blocks; edit translations; export bilingual HTML/Markdown or print to PDF.
 - **Providers:** local Ollama or a configured compatible chat-completion endpoint. Provider credentials stay in the backend environment.
 - **Shared core:** protected code/math/link tokens, identified results, bounded requests, caching and explicit per-segment failures.
