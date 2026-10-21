@@ -16,11 +16,13 @@ export function providerFromEnv(env: NodeJS.ProcessEnv = process.env): Provider 
   const base = (kind === 'ollama' ? env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434' : env.COMPATIBLE_BASE_URL || 'http://127.0.0.1:1234/v1').replace(/\/$/, '');
   const url = new URL(base);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error('Provider base URL must be HTTP(S) without embedded credentials');
-  const model = kind === 'ollama' ? env.OLLAMA_MODEL || 'qwen2.5:7b' : env.COMPATIBLE_MODEL || 'local-model';
+  const model = kind === 'ollama' ? env.OLLAMA_MODEL || 'qwen3.5:9b' : env.COMPATIBLE_MODEL || 'local-model';
+  // Thinking controls vary by model; only the known Qwen3.5 family gets this preference.
+  const disableThinking = kind === 'ollama' && /^qwen3\.5(?::|$)/.test(model);
   const apiKey = kind === 'compatible' ? env.COMPATIBLE_API_KEY : undefined;
   return {
     kind, model, configured: Boolean(model && base),
-    cacheNamespace: createHash('sha256').update(`${kind}:${base}:${model}:prompt-v1`).digest('hex'),
+    cacheNamespace: createHash('sha256').update(`${kind}:${base}:${model}:prompt-v1${disableThinking ? ':think-false' : ''}`).digest('hex'),
     async translate(segments, source, target, signal) {
       const messages = [
         { role: 'system', content: SYSTEM },
@@ -34,7 +36,7 @@ export function providerFromEnv(env: NodeJS.ProcessEnv = process.env): Provider 
             method: 'POST',
             headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
             body: JSON.stringify(kind === 'ollama'
-              ? { model, messages, stream: false, format: 'json', options: { temperature: 0 } }
+              ? { model, messages, stream: false, format: 'json', ...(disableThinking ? { think: false } : {}), options: { temperature: 0 } }
               : { model, messages, stream: false, temperature: 0, response_format: { type: 'json_object' } }),
             signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]),
           });

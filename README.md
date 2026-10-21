@@ -31,9 +31,11 @@ cp .env.example .env
 For local translation, install [Ollama](https://ollama.com/), then:
 
 ```sh
-ollama pull qwen2.5:7b
+ollama pull qwen3.5:9b
 npm run dev
 ```
+
+The default local model is `qwen3.5:9b`. Change `OLLAMA_MODEL` in `.env` to select another installed instruction model. This is a setup default, not a benchmarked translation-quality recommendation. [Qwen3.5 model catalog](https://ollama.com/library/qwen3.5).
 
 Open **http://127.0.0.1:5173** for the document workspace. The API listens on **http://127.0.0.1:8787**. Choose a target language, import a file and select Translate. A model must be installed and running for actual translation; there is no silent mock fallback.
 
