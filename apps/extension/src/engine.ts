@@ -119,7 +119,7 @@ export class PageTranslator {
 
   private removeDetached(): void {
     for (const [host, record] of this.records) {
-      if (!host.isConnected) { record.wrapper?.remove(); this.records.delete(host); this.intersections?.unobserve(host); }
+      if (!this.inBody(host)) { record.wrapper?.remove(); this.records.delete(host); this.intersections?.unobserve(host); }
     }
     const registered = new Set([...this.records.values()].map(record => record.wrapper).filter(Boolean));
     for (const element of this.document.querySelectorAll(`[${OWNED}="translation"]`)) if (!registered.has(element)) element.remove();
@@ -152,7 +152,7 @@ export class PageTranslator {
           return;
         }
         const host = item.value;
-        if (host?.isConnected) {
+        if (host && this.inBody(host)) {
           const source = serializeParagraph(host);
           if (source.sourceText.length >= 2 && /\p{L}/u.test(source.sourceText)) {
             task.candidates.add(host);
@@ -262,7 +262,7 @@ export class PageTranslator {
   }
 
   private current(record: Paragraph): boolean {
-    if (!record.host.isConnected || this.records.get(record.host) !== record) return false;
+    if (!this.inBody(record.host) || this.records.get(record.host) !== record) return false;
     if (serializeParagraph(record.host).signature !== record.source.signature) {
       this.refresh(record.host);
       return false;
@@ -271,6 +271,9 @@ export class PageTranslator {
   }
 
   private wrapper(record: Paragraph): Element {
+    // A document permits only one root element. Never insert a sibling beside
+    // <html>, head metadata, or a portal another extension moved outside body.
+    if (!this.inBody(record.host)) throw new Error('The source paragraph is outside the page body.');
     if (record.wrapper?.isConnected) {
       record.wrapper.removeAttribute('data-oit-pending'); record.wrapper.removeAttribute('aria-busy');
       record.wrapper.replaceChildren();
@@ -292,6 +295,11 @@ export class PageTranslator {
     element.classList.add('oit-error');
     element.textContent = 'Translation unavailable';
     element.setAttribute('title', message);
+  }
+
+  private inBody(host: Element): boolean {
+    const body = this.document.body;
+    return host.isConnected && !!body && (host === body || body.contains(host));
   }
 
   private report(): void { this.options?.onStatus?.(this.status()); }

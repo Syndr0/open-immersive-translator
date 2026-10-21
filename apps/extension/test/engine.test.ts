@@ -256,3 +256,45 @@ test('a reading batch can translate more than eight paragraphs together', async 
   assert.ok(batches.every(count => count <= 32), 'page batches remain bounded');
   engine.restore(); window.close();
 });
+
+test('document-root text added by another extension never becomes a translation host', async () => {
+  const window = new JSDOM('<!doctype html><html><head><title>Private metadata label</title></head><body><main><p>Public reading paragraph.</p></main></body></html>').window;
+  const document = window.document;
+  const engine = new PageTranslator(document);
+  const requested: string[] = [];
+  engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: async segments => {
+    requested.push(...segments.map(segment => segment.text));
+    return { results: segments.map(segment => ({ ...segment, text: 'Translated public paragraph.' })), errors: [] };
+  } });
+  await waitFor(() => engine.status().translated === 1);
+  document.documentElement.append(document.createTextNode('External extension portal label'));
+  const metadata = document.createElement('meta'); metadata.name = 'test-root-mutation'; document.head.append(metadata);
+  await sleep(350);
+  assert.deepEqual(requested, ['Public reading paragraph.']);
+  assert.equal(document.children.length, 1);
+  assert.equal(document.documentElement.tagName, 'HTML');
+  assert.equal(document.querySelectorAll('[data-oit-owned="translation"]').length, 1);
+  engine.restore();
+  assert.equal(document.querySelectorAll('[data-oit-owned="translation"]').length, 0);
+  assert.equal(document.querySelector('p')?.textContent, 'Public reading paragraph.');
+  assert.ok(document.documentElement.textContent?.includes('External extension portal label'));
+  window.close();
+});
+
+test('a pending paragraph moved outside body receives no late translation overlay', async () => {
+  const window = new JSDOM('<main><p>Source moved by another extension.</p></main>').window;
+  const document = window.document;
+  const paragraph = document.querySelector('p')!;
+  const engine = new PageTranslator(document);
+  let finish!: () => void;
+  engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: segments => new Promise(resolve => {
+    finish = () => resolve({ results: segments.map(segment => ({ ...segment, text: 'Late translation' })), errors: [] });
+  }) });
+  await waitFor(() => !!finish);
+  document.documentElement.append(paragraph);
+  finish();
+  await waitFor(() => engine.status().total === 0);
+  assert.equal(document.querySelector('[data-oit-owned="translation"]'), null);
+  assert.equal(paragraph.textContent, 'Source moved by another extension.');
+  engine.restore(); window.close();
+});

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { JSDOM } from 'jsdom';
-import { paragraphCandidates, renderTranslation, scanParagraphs, serializeParagraph } from '../src/dom';
+import { paragraphCandidates, paragraphOwner, renderTranslation, scanParagraphs, serializeParagraph } from '../src/dom';
 import { loopbackUrl } from '../src/settings';
 
 const documentFor = (html: string) => new JSDOM(html, { url: 'https://example.com/' }).window.document;
@@ -149,4 +149,43 @@ test('hidden code labels are not revealed when protected code is cloned outside 
   const holder = document.createElement('div'); holder.append(renderTranslation(value, value.text, document));
   assert.equal(holder.querySelector('code')?.textContent, 'x=1');
   assert.equal(host.querySelector('code')?.textContent, 'x=1hidden duplicate');
+});
+
+test('text inserted directly under HTML never becomes a paragraph owner', () => {
+  const document = documentFor('<p>Actual body prose.</p>');
+  const portalText = document.createTextNode('External extension label');
+  document.documentElement.append(portalText);
+  assert.equal(paragraphOwner(portalText), null);
+  assert.equal(paragraphOwner(document.documentElement), null);
+  assert.equal(paragraphOwner(document), null);
+  assert.deepEqual(scanParagraphs(document.documentElement).map(element => serializeParagraph(element).sourceText), ['Actual body prose.']);
+  assert.equal(serializeParagraph(document.documentElement).sourceText, '');
+  assert.equal(portalText.parentNode, document.documentElement);
+});
+
+test('head metadata and outside-body portals are not promoted by root scans', () => {
+  const document = documentFor('<title>Head metadata</title><style>head,title{display:block}</style><p>Actual body prose.</p>');
+  const title = document.querySelector('title')!;
+  const portal = document.createElement('div'); portal.textContent = 'Outside body extension UI'; document.documentElement.append(portal);
+  assert.equal(paragraphOwner(title.firstChild!), null);
+  assert.equal(paragraphOwner(document.head), null);
+  assert.equal(paragraphOwner(portal.firstChild!), null);
+  assert.deepEqual(scanParagraphs(document.head), []);
+  assert.deepEqual(scanParagraphs(portal), []);
+  assert.equal(serializeParagraph(title).sourceText, '');
+  assert.equal(serializeParagraph(portal).sourceText, '');
+  assert.deepEqual(scanParagraphs(document.documentElement).map(element => serializeParagraph(element).sourceText), ['Actual body prose.']);
+});
+
+test('body prose and later attached paragraphs remain eligible after outside-root mutations', () => {
+  const document = documentFor('Bare body prose.');
+  assert.equal(paragraphOwner(document.body.firstChild!), document.body);
+  const detached = document.createElement('p'); detached.textContent = 'New body paragraph.';
+  assert.equal(paragraphOwner(detached.firstChild!), null);
+  assert.equal(serializeParagraph(detached).sourceText, '');
+  document.documentElement.append(document.createTextNode('Unrelated extension text'));
+  document.head.append(document.createElement('meta'));
+  document.body.append(detached);
+  assert.equal(paragraphOwner(detached.firstChild!), detached);
+  assert.deepEqual(scanParagraphs(document.documentElement).map(element => serializeParagraph(element).sourceText), ['Bare body prose.', 'New body paragraph.']);
 });

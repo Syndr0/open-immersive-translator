@@ -24,6 +24,12 @@ export function owned(node: Node | null): boolean {
   return !!element?.closest(`[${OWNED}]`);
 }
 
+function inDocumentBody(node: Node): boolean {
+  const body = node.ownerDocument?.body;
+  const element = node.nodeType === 1 ? node as Element : node.parentElement;
+  return !!body && !!element && element.tagName !== 'HTML' && !element.closest('head') && (node === body || body.contains(node));
+}
+
 function excluded(element: Element): boolean {
   return owned(element) || !!element.closest(`${SKIP},${OTHER_TRANSLATOR}`);
 }
@@ -62,9 +68,13 @@ export function hidden(element: Element): boolean {
 }
 
 export function paragraphOwner(node: Node): Element | null {
+  if (!inDocumentBody(node)) return null;
+  const body = node.ownerDocument!.body;
   let element = node.nodeType === 1 ? node as Element : node.parentElement;
   while (element) {
+    if (element.tagName === 'HTML' || element.tagName === 'HEAD') return null;
     if (isBlock(element)) return element;
+    if (element === body) break;
     element = element.parentElement;
   }
   return null;
@@ -73,7 +83,13 @@ export function paragraphOwner(node: Node): Element | null {
 /** Group nested inline text by its nearest layout block; never split link text into a separate request. */
 export function* paragraphCandidates(root: Element): Generator<Element | null> {
   const document = root.ownerDocument;
-  const walker = document.createTreeWalker(root, 4);
+  const body = document.body;
+  if (!body) return;
+  // Mutation observers may report <html> or extension portals beside <body>.
+  // Ancestor scans cover body prose only; sibling/head roots are not content.
+  const scanRoot = root === body || body.contains(root) ? root : root.contains(body) ? body : undefined;
+  if (!scanRoot || !inDocumentBody(scanRoot)) return;
+  const walker = document.createTreeWalker(scanRoot, 4);
   const seen = new Set<Element>();
   let visits = 0;
   let node: Node | null;
@@ -96,6 +112,7 @@ export function scanParagraphs(root: Element): Element[] {
 }
 
 export function serializeParagraph(host: Element): Serialization {
+  if (!inDocumentBody(host)) return { text: '', sourceText: '', signature: 'outside-document-body', templates: new Map(), protectedNodes: new Map(), tokens: [] };
   let next = 0;
   let sourceText = '';
   const templates = new Map<number, Element>();
