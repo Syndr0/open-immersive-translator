@@ -1,5 +1,8 @@
 import { defaults, type Settings } from './settings';
 import type { PageStatus } from './engine';
+import { bindAgentHelp } from './agent-help';
+
+bindAgentHelp();
 
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id)! as T;
 const language = element<HTMLSelectElement>('language');
@@ -46,9 +49,9 @@ void (async () => {
   try {
     const health = await send({ type: 'oit:health' });
     connection.classList.add('ok');
-    connection.textContent = health.provider?.kind === 'demo' ? 'DEMO MODE · Test output, not real translation' : `${health.provider?.kind ?? 'Local server'} · ${health.provider?.model ?? 'Connected'}`;
+    connection.textContent = health.provider?.configured === false ? 'Setup needed · Use Copy for your agent below' : health.provider?.kind === 'demo' ? 'DEMO MODE · Test output, not real translation' : `${health.provider?.kind ?? 'Local server'} · ${health.provider?.model ?? 'Connected'}`;
   } catch {
-    connection.textContent = 'Server unavailable · Start npm run dev in the project';
+    connection.textContent = 'Service unavailable · Use Copy for your agent below';
   }
   await updateStatus().catch(() => {});
   setInterval(() => { void updateStatus().catch(() => {}); }, 1200);

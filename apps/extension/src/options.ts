@@ -1,4 +1,7 @@
 import { getSettings, loopbackUrl, type Settings } from './settings';
+import { bindAgentHelp } from './agent-help';
+
+bindAgentHelp();
 
 const field = (id: string) => document.getElementById(id)! as HTMLInputElement;
 const message = document.getElementById('message')!;

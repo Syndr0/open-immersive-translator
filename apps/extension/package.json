@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "dependencies": {
+    "@oit/agent-prompts": "0.1.0"
+  },
   "scripts": {
     "build": "node build.mjs",
     "test": "node --import tsx --test test/*.test.ts",

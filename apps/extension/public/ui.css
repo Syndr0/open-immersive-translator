@@ -26,7 +26,7 @@ main { padding: 0 22px 16px; }
 .connection.ok { color: var(--oit-secondary-text); }
 label { display: block; color: var(--oit-secondary-text); font-size: 12px; font-weight: 600; margin: 15px 0 6px; }
 input,select { width: 100%; border: 1px solid var(--oit-border); border-radius: 8px; padding: 10px 11px; background: var(--oit-background); color: var(--oit-text); font: inherit; }
-input:focus,select:focus { outline: 2px solid var(--oit-accent); outline-offset: 1px; }
+input:focus,select:focus,textarea:focus { outline: 2px solid var(--oit-accent); outline-offset: 1px; }
 button { cursor: pointer; border: 0; border-radius: 8px; font: inherit; padding: 11px 12px; }
 button:disabled { opacity: .55; cursor: wait; }
 .primary { background: var(--oit-accent); color: var(--oit-on-accent); width: 100%; margin-top: 14px; font-weight: 600; }
@@ -45,3 +45,10 @@ footer { padding: 10px 22px 16px; color: var(--oit-muted); font-size: 10px; }
 .help { font-size: 12px; color: var(--oit-muted); margin: 6px 0 20px; }
 .options aside { border-top: 1px solid var(--oit-border); margin-top: 30px; padding-top: 20px; color: var(--oit-muted); }
 .options h2 { font-size: 15px; color: var(--oit-text); }
+.agent-help { margin: 14px 0 18px; padding: 14px; border: 1px solid var(--oit-border); border-radius: 8px; background: var(--oit-surface); }
+.agent-help h2 { margin: 0 0 6px; font-size: 13px; }
+.agent-help p { margin: 6px 0; font-size: 12px; color: var(--oit-muted); }
+.agent-help .secondary { background: var(--oit-background); border: 1px solid var(--oit-border); }
+.agent-help details, .manual-settings { margin-top: 14px; }
+summary { cursor: pointer; color: var(--oit-secondary-text); font-size: 12px; }
+.agent-help textarea { display: block; width: 100%; resize: vertical; margin-top: 10px; border: 1px solid var(--oit-border); border-radius: 6px; padding: 9px; font: 11px/1.5 system-ui,sans-serif; color: var(--oit-text); background: var(--oit-background); }

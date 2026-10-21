@@ -5,13 +5,13 @@ import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
-import { TranslationBroker, type Provider, type TranslationJob } from '@oit/core';
+import { TranslationBroker, protect, restore, type Provider, type TranslationJob } from '@oit/core';
 import { Store } from './store.ts';
 import { parseDocument } from './parser.ts';
 import { providerFromEnv } from './provider.ts';
 import { exportDocument } from './export.ts';
 
-const language = z.string().trim().min(2).max(60);
+const language = z.string().trim().min(2).max(60).regex(/^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/, 'Use a language tag such as en, zh-Hans or auto');
 const requestSchema = z.object({
   segments: z.array(z.object({ id: z.string().min(1).max(200), text: z.string().max(100_000) })).min(1).max(100),
   targetLanguage: language, sourceLanguage: language.optional(),
@@ -153,6 +153,45 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
     const job = jobs.get(request.params.id);
     if (!job) { response.status(404).json({ error: 'Job not found; jobs are session-local and do not survive an API restart' }); return; }
     response.json(job);
+  });
+  // An agent can supply its own translations without a separate model/API account.
+  // Validate the entire batch before cancelling work or changing any saved value.
+  app.post('/api/documents/:id/translations', async (request, response) => {
+    const input = z.object({
+      targetLanguage: language,
+      segments: z.array(z.object({ id: z.string().min(1).max(200), text: z.string().min(1).max(100_000) })).min(1).max(100),
+    }).parse(request.body);
+    if (input.segments.reduce((sum, segment) => sum + segment.text.length, 0) > 200_000) {
+      response.status(400).json({ error: 'Translation batch exceeds 200000 characters' }); return;
+    }
+    const record = await store.load(request.params.id);
+    if (!record) { response.status(404).json({ error: 'Document not found' }); return; }
+    const blocks = new Map(record.document.blocks.map(block => [block.id, block]));
+    const seen = new Set<string>();
+    const validated: Record<string, string> = {};
+    for (const segment of input.segments) {
+      const block = blocks.get(segment.id);
+      if (!block || block.type === 'code' || seen.has(segment.id)) {
+        response.status(400).json({ error: 'Use unique IDs of translatable document blocks' }); return;
+      }
+      if (!segment.text.trim()) { response.status(400).json({ error: 'Translations must not be blank' }); return; }
+      seen.add(segment.id);
+      validated[segment.id] = restore(segment.text, protect(block.text));
+    }
+    const translationKey = `${record.document.id}:${input.targetLanguage}`;
+    generations.set(translationKey, (generations.get(translationKey) || 0) + 1);
+    activeTranslations.get(translationKey)?.abort(new Error('Agent translations saved; pending job cancelled to preserve edits'));
+    // Reload after validation to merge translations saved for other languages.
+    const current = (await store.load(record.document.id))!;
+    current.translations[input.targetLanguage] = {
+      targetLanguage: input.targetLanguage,
+      units: { ...(current.translations[input.targetLanguage]?.units || {}), ...validated },
+    };
+    current.latestLanguage = input.targetLanguage;
+    await store.save(current);
+    const translatable = current.document.blocks.filter(block => block.type !== 'code');
+    const translated = translatable.filter(block => current.translations[input.targetLanguage]!.units[block.id] !== undefined).length;
+    response.json({ documentId: current.document.id, targetLanguage: input.targetLanguage, method: 'agent', saved: seen.size, translated, total: translatable.length, complete: translated === translatable.length });
   });
   app.post('/api/jobs/:id/cancel', (request, response) => {
     const job = jobs.get(request.params.id);

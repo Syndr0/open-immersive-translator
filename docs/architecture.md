@@ -14,6 +14,10 @@ The popup invokes a content script on the active page. The script finds prose ro
 
 The initial renderer prioritizes safe bilingual prose translation. It does not traverse shadow roots, claim universal interactive-widget fidelity, or OCR canvas/images. Automatic dynamic handling applies after translation is invoked in the current page context.
 
+## Agent flow
+
+The reader and extension share deliberate, user-triggered setup prompts. The local stdio MCP service wraps the same HTTP API and document store. Uploaded files can be imported from configured local roots or explicit attachment bytes. Bounded document pages expose protected translation inputs. An agent can supply its own translated blocks through the batch-save endpoint, or invoke asynchronous provider jobs. The batch-save route validates every block ID and protected token before committing, keeps source unchanged, merges the translation overlay and cancels pending provider work for that language so late responses cannot overwrite the agent's result. Export paths are unique within a configured directory. See [agent setup and tool contract](agent-service.md).
+
 ## Document parsing
 
 Basic parsing supports text-layer PDF, TXT, Markdown, HTML and DOCX. PDF.js provides page text extraction. This is a lightweight reading-order heuristic, not recognition of every table, formula or scientific column. Scanned pages without text need an OCR-capable adapter. HTML is reduced to safe readable content; importing a document does not execute its scripts.

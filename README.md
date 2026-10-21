@@ -10,12 +10,19 @@ An independent, MIT-licensed implementation of paragraph-based website translati
 
 - **Websites:** translate prose into a bilingual view, retain the original page, restore it, and handle newly inserted content.
 - **Interface:** switch between Chinese and English with the **中 / EN** control. Your choice is saved separately from the document translation language. [中文界面预览](docs/images/workspace-zh.png).
+- **Agent help:** select **Copy for your agent** for guided website/provider setup, or attach a document to your agent and get bilingual files back through the local MCP service. The agent can supply translations using its own model without a separate translation API key.
 - **Documents:** import text PDFs, DOCX, HTML, Markdown and TXT; translate blocks; edit translations; export bilingual HTML/Markdown or print to PDF.
 - **Providers:** Google Cloud Translation, local Ollama, or a configured compatible chat-completion endpoint. Provider credentials stay in the backend environment.
 - **Shared core:** protected code/math/link tokens, identified results, bounded requests, caching and explicit per-segment failures.
 - **Optional recognition:** use a Docling worker for harder PDFs. The default lightweight PDF parser reads existing text; it does not perform OCR.
 
 This first version produces reflowed documents. It does not preserve the original PDF coordinates or guarantee scientific table/formula recognition. Parser and translation quality depend on the chosen engines. See [architecture and limits](docs/architecture.md).
+
+## Start with your agent
+
+In the reader, choose **Website translation → Copy for your agent**, then paste the request into Codex or another coding agent. Your agent handles installation, starts the service and prepares the extension. The command-line instructions below remain available for manual setup.
+
+For documents, attach your file to the agent and ask: **“Use Open Immersive Translator to translate this into Chinese and show me the bilingual output.”** The reader's document-agent request also includes the current file and target language. See the [agent service setup and workflow](docs/agent-service.md).
 
 ## Quick start
 
@@ -100,7 +107,9 @@ Tests use an explicitly selected deterministic demo/fake provider. Demo output i
 apps/reader       React document workspace
 apps/extension    Manifest V3 Chrome extension
 services/api      Local upload, parse, job, edit and export API
+services/agent    Local MCP document tools for coding agents
 packages/core     Shared broker, provider adapters and cache
+packages/agent-prompts Shared Chinese/English requests copied by reader and extension
 workers           Optional document recognition adapter
 tests             Browser integration tests
 ```

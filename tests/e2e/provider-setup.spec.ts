@@ -8,6 +8,7 @@ test('Google provider setup stays on the backend and is available in both interf
   await expect(page.locator('.provider-card')).toContainText('Google Cloud Translation');
   await page.locator('.provider-card').click();
   let dialog = page.getByRole('dialog');
+  await dialog.locator('.manual-setup > summary').click();
   await expect(dialog).toContainText('Enable the Cloud Translation API (Basic v2) and billing');
   await expect(dialog).toContainText('TRANSLATION_PROVIDER=google');
   await expect(dialog).toContainText('GOOGLE_TRANSLATE_API_KEY=your-google-cloud-api-key');
@@ -22,6 +23,7 @@ test('Google provider setup stays on the backend and is available in both interf
   await expect(page.locator('.provider-card')).toContainText('Google 云翻译');
   await page.locator('.provider-card').click();
   dialog = page.getByRole('dialog');
+  await dialog.locator('.manual-setup > summary').click();
   await expect(dialog).toContainText('启用 Cloud Translation API（Basic v2）和结算');
   await expect(dialog).toContainText('密钥只保留在后端');
   await expect(dialog).toContainText('翻译质量取决于所选模型');

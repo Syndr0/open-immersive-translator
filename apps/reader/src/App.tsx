@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   AlertCircle, ArrowDownToLine, ArrowRight, BookOpen, Check, CheckCircle2,
-  ChevronRight, Columns2, FileText, Globe2, Languages, LoaderCircle, Menu,
+  ChevronRight, Columns2, Copy, FileText, Globe2, Languages, LoaderCircle, Menu, MessageSquareText,
   Pause, Pencil, Plus, Printer, RefreshCw, Settings2, ShieldCheck, Upload, X,
 } from 'lucide-react';
 import {
@@ -10,6 +10,8 @@ import {
   request, wait, writeRecentIds,
 } from './api';
 import { I18nProvider, LocalizedError, type UiMessage, showMessage, uiError, useI18n } from './i18n';
+import { buildAgentPrompt, type AgentPromptKind } from './agent-prompts';
+import { readReaderLink } from './reader-links';
 
 const LANGUAGES = [
   ['zh-Hans', '简体中文'], ['zh-Hant', '繁體中文'], ['en', 'English'], ['ja', '日本語'],
@@ -17,23 +19,24 @@ const LANGUAGES = [
   ['pt', 'Português'], ['it', 'Italiano'], ['ar', 'العربية'], ['hi', 'हिन्दी'],
 ] as const;
 type Mode = 'bilingual' | 'translated' | 'source';
-type Panel = 'settings' | 'extension' | null;
+type Panel = 'settings' | 'extension' | 'document-agent' | null;
 
 const languageName = (value: string) => LANGUAGES.find(([code]) => code === value)?.[1] ?? value;
 const isRunning = (job: TranslationJob | null) => !!job && ['queued', 'running'].includes(job.status);
 
 function ReaderApp() {
   const { locale, setLocale, t } = useI18n();
+  const [initialLink] = useState(() => readReaderLink(window.location.search));
   const [health, setHealth] = useState<Health | null>(null);
   const [healthLoading, setHealthLoading] = useState(true);
   const [recent, setRecent] = useState<ReadingDocument[]>([]);
   const [document, setDocument] = useState<ReadingDocument | null>(null);
   const [units, setUnits] = useState<Record<string, string>>({});
-  const [target, setTarget] = useState('zh-Hans');
+  const [target, setTarget] = useState(initialLink.targetLanguage);
   const [mode, setMode] = useState<Mode>('bilingual');
   const [busy, setBusy] = useState<'upload' | 'load' | null>(null);
   const [job, setJob] = useState<TranslationJob | null>(null);
-  const [error, setError] = useState<UiMessage>('');
+  const [error, setError] = useState<UiMessage>(initialLink.invalid ? { key: 'invalidDocumentLink' } : '');
   const [notice, setNotice] = useState<UiMessage>('');
   const [dragging, setDragging] = useState(false);
   const [panel, setPanel] = useState<Panel>(null);
@@ -63,21 +66,36 @@ function ReaderApp() {
     void refreshHealth();
     const controller = new AbortController();
     const generation = epoch.current;
+    if (initialLink.requestedDocument && !initialLink.invalid) setBusy('load');
     void (async () => {
-      const responses = await Promise.all(readRecentIds().map(async (id) => {
-        try { return await request<DocumentResponse>(`/api/documents/${encodeURIComponent(id)}?targetLanguage=zh-Hans`, { signal: controller.signal }); }
+      const ids = [...new Set([...(initialLink.documentId && !initialLink.invalid ? [initialLink.documentId] : []), ...readRecentIds()])];
+      const responses = await Promise.all(ids.map(async (id) => {
+        try { return await request<DocumentResponse>(`/api/documents/${encodeURIComponent(id)}?targetLanguage=${encodeURIComponent(initialLink.targetLanguage)}`, { signal: controller.signal }); }
         catch { return null; }
       }));
       if (controller.signal.aborted || generation !== epoch.current) return;
       const found = responses.filter((value): value is DocumentResponse => !!value);
       setRecent(found.map((value) => value.document));
-      if (found[0]) {
-        setDocument(found[0].document);
-        setUnits(found[0].translations?.targetLanguage === 'zh-Hans' ? found[0].translations.units : {});
+      const selected = initialLink.invalid ? undefined : initialLink.requestedDocument ? found.find((value) => value.document.id === initialLink.documentId) : found[0];
+      if (selected) {
+        setDocument(selected.document);
+        setUnits(selected.translations?.targetLanguage === initialLink.targetLanguage ? selected.translations.units : {});
+        writeRecentIds([selected.document.id, ...found.map((value) => value.document.id)]);
+      } else if (initialLink.requestedDocument && !initialLink.invalid) {
+        setError({ key: 'documentLinkUnavailable' });
       }
+      setBusy(null);
     })();
     return () => { controller.abort(); actionController.current?.abort(); };
-  }, [refreshHealth]);
+  }, [initialLink, refreshHealth]);
+
+  useEffect(() => {
+    if (!document) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set('document', document.id);
+    url.searchParams.set('targetLanguage', target);
+    window.history.replaceState(window.history.state, '', url);
+  }, [document?.id, target]);
 
   useEffect(() => {
     globalThis.document.title = document ? `${document.name} · ${t('appName')}` : t('appName');
@@ -278,10 +296,10 @@ function ReaderApp() {
         <div className="workspace-content">
           <div className="page-heading">
             <div><h1>{t('documentTranslation')}<span>.</span></h1><p>{t('documentSubtitle')}</p></div>
-            {document && <button className="button secondary new-document" onClick={() => fileInput.current?.click()} disabled={!!busy}><Plus size={16} />{t('newDocument')}</button>}
+            <div className="page-actions"><button className="button secondary agent-document-button" onClick={() => setPanel('document-agent')}><MessageSquareText size={16} />{t('useYourAgent')}</button>{document && <button className="button secondary new-document" onClick={() => fileInput.current?.click()} disabled={!!busy}><Plus size={16} />{t('newDocument')}</button>}</div>
           </div>
 
-          {offline && <div className="message warning"><AlertCircle size={18} /><div><strong>{t('serverOfflineTitle')}</strong><span>{t('startApiFirst')} <code>npm run dev</code>{t('startApiLast')}</span></div><button className="text-button" onClick={() => void refreshHealth()}><RefreshCw size={14} />{t('reconnect')}</button></div>}
+          {offline && <div className="message warning"><AlertCircle size={18} /><div><strong>{t('serverOfflineTitle')}</strong><span>{t('agentSetupDescription')}</span></div><button className="text-button" onClick={() => void refreshHealth()}><RefreshCw size={14} />{t('reconnect')}</button></div>}
           {demo && <div className="message warning"><AlertCircle size={18} /><div><strong>{t('demoTitle')}</strong><span>{t('demoDescription')}</span></div><button className="text-button" onClick={() => setPanel('settings')}>{t('setupProvider')}</button></div>}
           {error && <div className="message error" role="alert"><AlertCircle size={18} /><div><strong>{t('actionFailed')}</strong><span>{showMessage(error, t)}</span></div><button className="icon-button" aria-label={t('dismissError')} onClick={() => setError('')}><X size={16} /></button></div>}
           {notice && <div className="message success" role="status"><CheckCircle2 size={18} /><div><span>{showMessage(notice, t)}</span></div><button className="icon-button" aria-label={t('dismissNotification')} onClick={() => setNotice('')}><X size={16} /></button></div>}
@@ -311,7 +329,7 @@ function ReaderApp() {
           ) : document && (
             <section className="reader-card">
               <div className="document-toolbar"><div className="document-title"><span className="file-icon"><FileText size={22} /></span><div><h2 title={document.name}>{document.name}</h2><p>{document.format.toUpperCase()}{document.pageCount ? ` · ${t('pages', { count: document.pageCount })}` : ''} · {t('readingBlocks', { count: totalCount })}<span className="dot-separator">·</span><span>{t('translatedCount', { completed: translatedCount, total: totalCount })}</span></p></div></div><span className={`document-status ${translatedCount === totalCount && totalCount > 0 ? 'complete' : ''}`}>{running ? <><LoaderCircle size={12} className="spin" />{t('translating')}</> : translatedCount === totalCount && totalCount > 0 ? <><Check size={12} />{t('translated')}</> : <><span />{t('readyToRead')}</>}</span></div>
-              <div className="translation-toolbar"><div className="language-group"><Languages size={17} /><span className="source-language">{t('autoDetect')}</span><ArrowRight size={14} /><label className="language-select"><span className="visually-hidden">{t('targetLanguage')}</span><select aria-label={t('targetLanguage')} value={target} disabled={!!busy || running} onChange={(event) => { const next = event.target.value; setTarget(next); setUnits({}); void selectDocument(document.id, next); }}>{LANGUAGES.map(([code, label]) => <option key={code} value={code}>{label}</option>)}</select></label></div><div className="toolbar-actions">{document.format.toLowerCase() === 'pdf' && <button className={`button small subtle original-toggle ${original ? 'selected' : ''}`} onClick={() => setOriginal(!original)}><Columns2 size={15} />{t('originalPdf')}</button>}{running ? <button className="button small secondary" onClick={() => void stop()}><Pause size={15} />{t('stop')}</button> : <button className="button small primary" onClick={() => void translate()} disabled={offline || !health?.provider.configured || totalCount === 0}><Languages size={15} />{translatedCount > 0 ? t('translateAgain') : t('translateDocument')}</button>}</div></div>
+              <div className="translation-toolbar"><div className="language-group"><Languages size={17} /><span className="source-language">{t('autoDetect')}</span><ArrowRight size={14} /><label className="language-select"><span className="visually-hidden">{t('targetLanguage')}</span><select aria-label={t('targetLanguage')} value={target} disabled={!!busy || running} onChange={(event) => { const next = event.target.value; setTarget(next); setUnits({}); void selectDocument(document.id, next); }}>{!LANGUAGES.some(([code]) => code === target) && <option value={target}>{target}</option>}{LANGUAGES.map(([code, label]) => <option key={code} value={code}>{label}</option>)}</select></label></div><div className="toolbar-actions">{document.format.toLowerCase() === 'pdf' && <button className={`button small subtle original-toggle ${original ? 'selected' : ''}`} onClick={() => setOriginal(!original)}><Columns2 size={15} />{t('originalPdf')}</button>}{running ? <button className="button small secondary" onClick={() => void stop()}><Pause size={15} />{t('stop')}</button> : <button className="button small primary" onClick={() => void translate()} disabled={offline || !health?.provider.configured || totalCount === 0}><Languages size={15} />{translatedCount > 0 ? t('translateAgain') : t('translateDocument')}</button>}</div></div>
               {running && <div className="translation-progress" role="status"><div><span><LoaderCircle className="spin" size={14} /> {t('translatingTo', { language: languageName(target) })}</span><strong>{job?.completed ?? 0} / {job?.total ?? totalCount}<span>{progress}%</span></strong></div><div className="progress-track"><div style={{ width: `${progress}%` }} /></div></div>}
               {document.warnings.length > 0 && <details className="document-warnings"><summary><AlertCircle size={14} /> {t('documentNotes', { count: document.warnings.length })}</summary><ul>{document.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></details>}
               <div className="view-toolbar"><div className="segmented-control" aria-label={t('readingMode')}>{([['bilingual', 'bilingual'], ['translated', 'translation'], ['source', 'source']] as const).map(([value, label]) => <button key={value} className={mode === value ? 'selected' : ''} onClick={() => setMode(value)}>{t(label)}</button>)}</div><div className="export-actions"><button className="text-button" disabled={exporting || running || translatedCount === 0} onClick={() => void download('md')}><ArrowDownToLine size={14} /> Markdown</button><button className="text-button" disabled={exporting || running || translatedCount === 0} onClick={() => void download('html')}><ArrowDownToLine size={14} /> HTML</button><button className="text-button" disabled={running} onClick={() => window.print()}><Printer size={14} />{t('pdfPrint')}</button></div></div>
@@ -331,9 +349,85 @@ function ReaderApp() {
         </div>
       </main>
 
-      {panel && <div className="modal-backdrop" onClick={() => setPanel(null)}><section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-heading" onClick={(event) => event.stopPropagation()}><div className="modal-heading"><span className="modal-symbol">{panel === 'settings' ? <Settings2 size={23} /> : <Globe2 size={23} />}</span><button className="icon-button" aria-label={t('closeDialog')} onClick={() => setPanel(null)}><X size={19} /></button></div>{panel === 'settings' ? <><span className="eyebrow">{t('yourEngine')}</span><h2 id="settings-heading">{t('ownProvider')}</h2><p>{t('providerServerNote')}</p><div className="settings-status"><span className={`status-dot ${offline ? 'offline' : ''}`} /><div><strong>{health ? `${health.provider.kind === 'google' ? t('googleTranslation') : health.provider.kind} / ${health.provider.model}` : t('apiNotConnected')}</strong><small>{health ? health.provider.configured ? t('providerConfigured') : t('providerIncomplete') : t('expectedServer')}</small></div><button className="icon-button" aria-label={t('refreshServer')} onClick={() => void refreshHealth()}><RefreshCw size={16} className={healthLoading ? 'spin' : ''} /></button></div><h3>{t('startLocal')}</h3><p className="small-copy">{t('startLocalDescription')}</p><pre className="setup-code">{'ollama pull qwen3.5:2b\nnpm install\nnpm run dev'}</pre><p className="small-copy">{t('localModelNote')}</p><h3>{t('googleSetup')}</h3><p className="small-copy">{t('googleSetupDescription')}</p><pre className="setup-code">{'TRANSLATION_PROVIDER=google\nGOOGLE_TRANSLATE_API_KEY=your-google-cloud-api-key'}</pre><p className="small-copy">{t('googleEnvNote')}</p><a className="text-button" href="https://docs.cloud.google.com/translate/docs/setup" target="_blank" rel="noopener noreferrer">{t('googleSetupDocs')} ↗</a><h3>{t('compatibleApi')}</h3><p className="small-copy">{t('compatibleFirst')} <code>.env</code>{t('compatibleSecond')} <code>.env.example</code> {t('compatibleLast')}</p><p className="settings-footnote">{t('parserNote')}</p></> : <><span className="eyebrow">{t('furtherReading')}</span><h2 id="settings-heading">{t('translateWeb')}</h2><p>{t('extensionDescription')}</p><ol className="setup-steps"><li><span>1</span><div><strong>{t('buildExtension')}</strong><code>npm run build --workspace @oit/extension</code></div></li><li><span>2</span><div><strong>{t('loadChrome')}</strong><p>{t('loadChromeFirst')} <code>chrome://extensions</code>{t('loadChromeSecond')} <code>apps/extension/dist</code>{t('loadChromeLast')}</p></div></li><li><span>3</span><div><strong>{t('chooseAndTranslate')}</strong><p>{t('extensionUse')}</p></div></li></ol><div className="settings-footnote"><ShieldCheck size={15} /><span>{t('extensionPrivacy')}</span></div></>}<button className="button primary modal-done" onClick={() => setPanel(null)}>{t('gotIt')} <Check size={16} /></button></section></div>}
+      {panel && <div className="modal-backdrop" onClick={() => setPanel(null)}>
+        <section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-heading" onClick={(event) => event.stopPropagation()}>
+          <div className="modal-heading"><span className="modal-symbol">{panel === 'settings' ? <Settings2 size={23} /> : panel === 'extension' ? <Globe2 size={23} /> : <MessageSquareText size={23} />}</span><button className="icon-button" aria-label={t('closeDialog')} onClick={() => setPanel(null)}><X size={19} /></button></div>
+          {panel === 'settings' ? <>
+            <span className="eyebrow">{t('yourEngine')}</span><h2 id="settings-heading">{t('ownProvider')}</h2><p>{t('providerServerNote')}</p>
+            <AgentPromptCard kind="provider" />
+            <div className="settings-status"><span className={`status-dot ${offline ? 'offline' : ''}`} /><div><strong>{health ? `${health.provider.kind === 'google' ? t('googleTranslation') : health.provider.kind} / ${health.provider.model}` : t('apiNotConnected')}</strong><small>{health ? health.provider.configured ? t('providerConfigured') : t('providerIncomplete') : t('expectedServer')}</small></div><button className="icon-button" aria-label={t('refreshServer')} onClick={() => void refreshHealth()}><RefreshCw size={16} className={healthLoading ? 'spin' : ''} /></button></div>
+            <details className="manual-setup"><summary>{t('manualSetup')}</summary>
+              <h3>{t('startLocal')}</h3><p className="small-copy">{t('startLocalDescription')}</p><pre className="setup-code">{'ollama pull qwen3.5:2b\nnpm install\nnpm run dev'}</pre><p className="small-copy">{t('localModelNote')}</p>
+              <h3>{t('googleSetup')}</h3><p className="small-copy">{t('googleSetupDescription')}</p><pre className="setup-code">{'TRANSLATION_PROVIDER=google\nGOOGLE_TRANSLATE_API_KEY=your-google-cloud-api-key'}</pre><p className="small-copy">{t('googleEnvNote')}</p><a className="text-button" href="https://docs.cloud.google.com/translate/docs/setup" target="_blank" rel="noopener noreferrer">{t('googleSetupDocs')} ↗</a>
+              <h3>{t('compatibleApi')}</h3><p className="small-copy">{t('compatibleFirst')} <code>.env</code>{t('compatibleSecond')} <code>.env.example</code> {t('compatibleLast')}</p><p className="settings-footnote">{t('parserNote')}</p>
+            </details>
+          </> : panel === 'extension' ? <>
+            <span className="eyebrow">{t('furtherReading')}</span><h2 id="settings-heading">{t('translateWeb')}</h2><p>{t('extensionDescription')}</p>
+            <AgentPromptCard kind="website" />
+            <details className="manual-setup"><summary>{t('manualSetup')}</summary><ol className="setup-steps">
+              <li><span>1</span><div><strong>{t('buildExtension')}</strong><code>npm run build --workspace @oit/extension</code></div></li>
+              <li><span>2</span><div><strong>{t('loadChrome')}</strong><p>{t('loadChromeFirst')} <code>chrome://extensions</code>{t('loadChromeSecond')} <code>apps/extension/dist</code>{t('loadChromeLast')}</p></div></li>
+              <li><span>3</span><div><strong>{t('chooseAndTranslate')}</strong><p>{t('extensionUse')}</p></div></li>
+            </ol></details>
+            <div className="settings-footnote"><ShieldCheck size={15} /><span>{t('extensionPrivacy')}</span></div>
+          </> : <>
+            <h2 id="settings-heading">{t('agentDocumentTitle')}</h2><p>{t('agentDocumentDescription')}</p>
+            {document && <p className="agent-document-context">{t('agentExistingDocument', { name: document.name, language: languageName(target) })}</p>}
+            <ol className="setup-steps agent-document-steps">
+              <li><span>1</span><div><strong>{t(document ? 'agentDocumentStep1Existing' : 'agentDocumentStep1')}</strong></div></li>
+              <li><span>2</span><div><strong>{t('agentDocumentStep2')}</strong></div></li>
+              <li><span>3</span><div><strong>{t('agentDocumentStep3')}</strong></div></li>
+            </ol>
+            <AgentPromptCard kind="document" document={document} targetLanguage={document ? target : undefined} />
+            <p className="settings-footnote">{t('agentDocumentHow')}</p>
+          </>}
+          <button className="button primary modal-done" onClick={() => setPanel(null)}>{t('gotIt')} <Check size={16} /></button>
+        </section>
+      </div>}
     </div>
   );
+}
+
+function AgentPromptCard({ kind, document, targetLanguage }: {
+  kind: AgentPromptKind; document?: ReadingDocument | null; targetLanguage?: string;
+}) {
+  const { locale, t } = useI18n();
+  const prompt = buildAgentPrompt({ kind, locale, documentId: document?.id, documentName: document?.name, targetLanguage });
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'fallback'>('idle');
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const promptField = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => { setCopyState('idle'); }, [prompt]);
+  useEffect(() => {
+    if (copyState !== 'fallback' || !previewOpen) return;
+    const frame = requestAnimationFrame(() => {
+      promptField.current?.focus();
+      promptField.current?.select();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [copyState, previewOpen]);
+
+  async function copyPrompt() {
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard unavailable');
+      await navigator.clipboard.writeText(prompt);
+      setCopyState('copied');
+    } catch {
+      setPreviewOpen(true);
+      setCopyState('fallback');
+    }
+  }
+
+  return <section className="agent-assist" data-agent-prompt={kind}>
+    {kind !== 'document' && <h3><MessageSquareText size={17} />{t('letAgentSetup')}</h3>}
+    <p>{t(kind === 'document' ? 'agentDocumentPromptDescription' : 'agentSetupDescription')}</p>
+    <button className="button primary agent-copy-button" onClick={() => void copyPrompt()}><Copy size={15} />{t('copyForAgent')}</button>
+    {copyState !== 'idle' && <p className={`agent-copy-status ${copyState}`} role="status" aria-live="polite">{t(copyState === 'copied' ? 'promptCopied' : 'promptCopyFallback')}</p>}
+    <details className="agent-prompt-preview" open={previewOpen} onToggle={(event) => setPreviewOpen(event.currentTarget.open)}>
+      <summary>{t('previewAgentRequest')}</summary>
+      <textarea ref={promptField} aria-label={t('agentRequestLabel')} value={prompt} readOnly rows={9} spellCheck={false} />
+    </details>
+  </section>;
 }
 
 function ReadingBlock({ block, translation, mode, language, index, editable, onSave }: {

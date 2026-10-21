@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import type { AddressInfo } from 'node:net';
-import type { Provider } from '@oit/core';
+import { protect, type Provider } from '@oit/core';
 import { createApp } from '../src/app.ts';
 import { parseDocument, htmlToText, validateDocxArchive } from '../src/parser.ts';
 import { providerFromEnv } from '../src/provider.ts';
@@ -100,6 +100,69 @@ test('Google health reports configuration without returning the server API key',
       await rm(dataDir, { recursive: true, force: true });
     }
   }
+});
+
+test('agent translation batches validate protected text atomically and export without a provider', async () => {
+  const dataDir = await mkdtemp(`${tmpdir()}/oit-agent-save-`);
+  const api = await createApp({ dataDir, env: { TRANSLATION_PROVIDER: 'google' } });
+  const server = api.app.listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const source = '# Research\n\nKeep $E=mc^2$, `code()` and https://example.com.\n\n```js\nconst source = 1;\n```';
+    const { document } = await fetch(`${base}/api/documents`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-File-Name': 'agent-notes.md' }, body: source }).then(response => response.json());
+    const [heading, prose, code] = document.blocks;
+    const save = (segments: Array<{ id: string; text: string }>) => fetch(`${base}/api/documents/${document.id}/translations`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ targetLanguage: 'zh-Hans', segments }) });
+    assert.equal((await save([{ id: heading.id, text: '研究' }, { id: prose.id, text: 'Missing required markers' }])).status, 400);
+    assert.equal((await fetch(`${base}/api/documents/${document.id}/translations`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ targetLanguage: '__proto__', segments: [{ id: heading.id, text: 'Invalid language key' }] }) })).status, 400);
+    assert.deepEqual((await api.store.load(document.id))!.translations, {});
+    const translated = protect(prose.text).text.replace('Keep', '保留');
+    const result = await save([{ id: heading.id, text: '研究 <script>alert(1)</script>' }, { id: prose.id, text: translated }]);
+    assert.equal(result.status, 200);
+    assert.deepEqual(await result.json(), { documentId: document.id, targetLanguage: 'zh-Hans', method: 'agent', saved: 2, translated: 2, total: 2, complete: true });
+    const record = (await api.store.load(document.id))!;
+    assert.equal(record.document.blocks[1]!.text, prose.text);
+    assert.equal(record.translations['zh-Hans']!.units[prose.id], prose.text.replace('Keep', '保留'));
+    assert.equal(record.translations['zh-Hans']!.units[code.id], undefined);
+    const exported = await fetch(`${base}/api/documents/${document.id}/export?format=html&targetLanguage=zh-Hans`).then(response => response.text());
+    assert.ok(exported.includes('研究 &lt;script&gt;'));
+    assert.ok(exported.includes('$E=mc^2$'));
+    assert.ok(exported.includes('const source = 1;'));
+    assert.ok(!exported.includes('<script>'));
+    for (const invalid of [
+      [{ id: heading.id, text: 'overwrite' }, { id: heading.id, text: 'duplicate' }],
+      [{ id: 'unknown', text: 'unknown' }], [{ id: code.id, text: 'change code' }], [{ id: heading.id, text: '   ' }],
+    ]) assert.equal((await save(invalid)).status, 400);
+    assert.equal((await api.store.load(document.id))!.translations['zh-Hans']!.units[heading.id], '研究 <script>alert(1)</script>');
+    assert.equal((await fetch(`${base}/api/health`).then(response => response.json())).provider.configured, false);
+  } finally { api.close(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test('saving agent translations cancels a pending provider job and preserves the supplied result', async () => {
+  const dataDir = await mkdtemp(`${tmpdir()}/oit-agent-conflict-`);
+  let release!: () => void;
+  let start!: () => void;
+  const started = new Promise<void>(resolve => { start = resolve; });
+  const api = await createApp({ dataDir, provider: { ...fixture, async translate(segments) {
+    start(); await new Promise<void>(resolve => { release = resolve; });
+    return segments.map(segment => ({ ...segment, text: 'Late provider output' }));
+  } } });
+  const server = api.app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const { document } = await fetch(`${base}/api/documents`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-File-Name': 'agent.txt' }, body: 'Original source' }).then(response => response.json());
+    const { jobId } = await fetch(`${base}/api/documents/${document.id}/translate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ targetLanguage: 'fr' }) }).then(response => response.json());
+    await started;
+    const saved = await fetch(`${base}/api/documents/${document.id}/translations`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ targetLanguage: 'fr', segments: [{ id: document.blocks[0].id, text: 'Texte fourni par l’agent' }] }) });
+    assert.equal(saved.status, 200); release();
+    for (let attempt = 0; attempt < 50; attempt++) {
+      const job = await fetch(`${base}/api/jobs/${jobId}`).then(response => response.json());
+      if (job.status === 'cancelled') break;
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    assert.equal((await fetch(`${base}/api/jobs/${jobId}`).then(response => response.json())).status, 'cancelled');
+    assert.equal((await api.store.load(document.id))!.translations.fr!.units[document.blocks[0].id], 'Texte fourni par l’agent');
+  } finally { release?.(); api.close(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(dataDir, { recursive: true, force: true }); }
 });
 
 test('partial job failure preserves successful blocks and requires explicit partial export', async () => {
