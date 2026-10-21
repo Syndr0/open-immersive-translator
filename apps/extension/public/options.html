@@ -4,7 +4,7 @@
   <section class="agent-help" aria-label="Agent setup"><h2>No technical setup needed from you</h2><p>Copy this request into Codex or another coding agent. Your agent can install the service, connect translation and prepare the Chrome extension.</p><button id="copy-agent" class="secondary">Copy for your agent</button><p id="agent-copy-status" role="status" aria-live="polite"></p><details id="agent-preview"><summary>View agent request</summary><textarea id="agent-prompt" aria-label="Website setup request for your agent" readonly rows="9"></textarea></details></section>
   <details class="manual-settings"><summary>Manual settings</summary>
   <form id="form"><label for="backend">Translation server</label><input id="backend" type="url" placeholder="http://127.0.0.1:8787" required><p class="help">Run the project's local API. Provider credentials are configured on that server, never in this extension. This release connects to localhost only.</p>
-  <label for="reader-url">Document app</label><input id="reader-url" type="url" placeholder="http://localhost:5173" required>
+  <label for="reader-url">Document app</label><input id="reader-url" type="url" placeholder="http://127.0.0.1:8787" required>
   <label for="target">Target language</label><input id="target" placeholder="zh-Hans" required><p class="help">A language tag such as en, zh-Hans, ja, es, or ar.</p>
   <label for="source">Source language</label><input id="source" placeholder="auto" required>
   <label for="theme">Bilingual style</label><select id="theme"><option value="subtle">Subtle divider</option><option value="accent">Red accent</option></select>

@@ -52,3 +52,41 @@ test('a missing Google API key leaves document import available and translation 
   await expect(page.getByRole('dialog')).toContainText('Provider configuration incomplete');
   await expect(page.getByRole('dialog').locator('input')).toHaveCount(0);
 });
+
+test('Codex health and setup requests explain the existing GPT-6.1 connection in both languages', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+      writeText: async (text: string) => { (window as unknown as { copiedCodexSetup: string }).copiedCodexSetup = text; },
+    } });
+  });
+  await page.route('**/api/health', route => route.fulfill({
+    json: { ok: true, version: '0.1.0', provider: { kind: 'codex', model: 'gpt-6.1-sol', configured: true } },
+  }));
+  await page.goto('/');
+  await expect(page.locator('.provider-card')).toContainText('Codex translation');
+  await expect(page.locator('.provider-card')).toContainText('gpt-6.1-sol');
+  await page.locator('.provider-card').click();
+  let dialog = page.getByRole('dialog');
+  await expect(dialog.locator('.manual-setup')).not.toHaveAttribute('open');
+  await dialog.getByRole('button', { name: 'Copy for your agent', exact: true }).click();
+  await expect(dialog.getByRole('status')).toContainText('Copied');
+  const copied = await page.evaluate(() => (window as unknown as { copiedCodexSetup: string }).copiedCodexSetup);
+  expect(copied).toContain('existing authorized Codex sign-in');
+  expect(copied).toContain('TRANSLATION_PROVIDER=codex');
+  expect(copied).toContain('CODEX_MODEL=gpt-6.1-sol');
+  expect(copied).toContain('no extra API key or model download');
+  await dialog.locator('.manual-setup > summary').click();
+  await expect(dialog).toContainText('translations use your existing Codex allowance');
+  await expect(dialog).toContainText('model access and usage limits still apply');
+  await expect(dialog).toContainText('CODEX_CLI_PATH=/absolute/path/to/codex');
+  await expect(dialog.locator('input')).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
+  await page.getByTestId('ui-language-zh').click();
+  await expect(page.locator('.provider-card')).toContainText('Codex 翻译');
+  await page.locator('.provider-card').click();
+  dialog = page.getByRole('dialog');
+  await dialog.locator('.manual-setup > summary').click();
+  await expect(dialog).toContainText('翻译会使用现有 Codex 额度');
+  await expect(dialog).toContainText('仍受模型访问权限和用量限制约束');
+  await expect(dialog).toContainText('不要将登录令牌复制到 .env 或浏览器');
+});

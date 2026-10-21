@@ -12,7 +12,7 @@ An independent, MIT-licensed implementation of paragraph-based website translati
 - **Interface:** switch between Chinese and English with the **中 / EN** control. Your choice is saved separately from the document translation language. [中文界面预览](docs/images/workspace-zh.png).
 - **Agent help:** select **Copy for your agent** for guided website/provider setup, or attach a document to your agent and get bilingual files back through the local MCP service. The agent can supply translations using its own model without a separate translation API key.
 - **Documents:** import text PDFs, DOCX, HTML, Markdown and TXT; translate blocks; edit translations; export bilingual HTML/Markdown or print to PDF.
-- **Providers:** Google Cloud Translation, local Ollama, or a configured compatible chat-completion endpoint. Provider credentials stay in the backend environment.
+- **Providers:** an installed Codex CLI, Google Cloud Translation, local Ollama, or a configured compatible chat-completion endpoint. Provider credentials stay in the backend environment.
 - **Shared core:** protected code/math/link tokens, identified results, bounded requests, caching and explicit per-segment failures.
 - **Optional recognition:** use a Docling worker for harder PDFs. The default lightweight PDF parser reads existing text; it does not perform OCR.
 
@@ -55,6 +55,18 @@ npm start
 
 Open **http://127.0.0.1:8787**. Keep the repository dependencies installed: the API runs TypeScript through `tsx`.
 
+### Use your existing Codex sign-in
+
+If Codex is already installed and signed in, it can handle both the document Translate button and website translation using your account's existing allowance. Set these backend values and restart the API:
+
+```dotenv
+TRANSLATION_PROVIDER=codex
+CODEX_CLI_PATH=codex
+CODEX_MODEL=gpt-6.1-sol
+```
+
+Use an absolute `CODEX_CLI_PATH` if the desktop app cannot find `codex` on its PATH. The adapter uses the official CLI's saved authentication without reading or copying tokens. Each bounded translation runs in an isolated temporary directory with command/browser tools disabled, read-only sandboxing, no inherited user configuration, and a structured JSON output schema. No separate API key or model download is needed. Account limits and model availability still apply; this is not unlimited free inference. [Official non-interactive Codex documentation](https://developers.openai.com/codex/noninteractive).
+
 ### Use Google Translate without a local model
 
 Use [Google Cloud Translation Basic](https://docs.cloud.google.com/translate/docs/setup): select a Cloud project, enable billing and the Cloud Translation API, then create an API key. Restrict the key to the Cloud Translation API. Set these values in your server's `.env` and restart the backend:
@@ -85,7 +97,7 @@ The compatible adapter sends chat-completion requests and expects JSON containin
 2. Open `chrome://extensions`, enable **Developer mode**, and select **Load unpacked**.
 3. Choose this repository's **`apps/extension/dist`** folder.
 4. Open a normal website, select the extension, choose a language and translate.
-5. Use Restore to remove the bilingual additions. Extension settings select the local API address. When using `npm start`, set the Document app URL to `http://127.0.0.1:8787`; its development default is `http://localhost:5173`.
+5. Use Restore to remove the bilingual additions. The extension's backend and Document app both default to `http://127.0.0.1:8787`. If you use the separate development reader, change Document app to `http://127.0.0.1:5173` in extension settings.
 
 The extension acts on pages you invoke it on. Browser-internal pages, inaccessible frames, shadow-root content and canvas/image-only text require further integrations. Website text is sent to your configured backend/provider when you translate.
 

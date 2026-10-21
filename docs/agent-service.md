@@ -11,7 +11,7 @@ The reader's **Copy for your agent** actions prepare a fuller request for websit
 Two document workflows are supported:
 
 - **Agent translation:** the agent reads protected document blocks, translates them with its own model, saves the validated translations and exports the result. No separate translation API key or local model download is required. Your agent's normal access and usage terms still apply.
-- **Configured provider:** the service starts an asynchronous translation job with your existing Ollama, Google or compatible provider. The agent checks progress and exports after completion. Provider costs and availability apply.
+- **Configured provider:** the service starts an asynchronous translation job with your existing Codex CLI, Ollama, Google or compatible provider. The agent checks progress and exports after completion. Provider costs, account limits and availability apply. The Codex adapter reuses CLI-managed sign-in on the backend; never copy authentication tokens into this service or browser storage.
 
 ## Connect a local agent
 

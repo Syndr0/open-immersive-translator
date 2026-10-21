@@ -6,7 +6,7 @@ Website paragraphs and document blocks become `{id, text}` segments with source/
 
 Original source content and translated overlays are stored separately. A document can be translated again without repeating parsing. Job progress records count actual units; cancellation prevents a late job from publishing a newer result. Human translation edits are saved as translated values rather than changing the parsed source.
 
-The Ollama and compatible chat adapters request identified JSON translations from an instruction model. The Google adapter calls Cloud Translation Basic v2 with plain-text arrays and maps ordered responses back to segment IDs; it needs no local model. Credentials stay in server environment variables. All adapters pass through the same protected-token validation and cache boundary. Google translates parsed blocks rather than receiving the original PDF; changing translation providers does not change document recognition or export fidelity.
+The Ollama and compatible chat adapters request identified JSON translations from an instruction model. The Codex adapter invokes an installed CLI with existing authentication, a structured output schema and isolated temporary working directory; it disables command/browser tools and inherited user configuration. The Google adapter calls Cloud Translation Basic v2 with plain-text arrays and maps ordered responses back to segment IDs; it needs no local model. Credentials stay on the backend. All adapters pass through the same protected-token validation and cache boundary. Providers translate parsed blocks rather than receiving the original PDF; changing translation providers does not change document recognition or export fidelity.
 
 ## Website flow
 
