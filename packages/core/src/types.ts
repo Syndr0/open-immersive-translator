@@ -45,6 +45,8 @@ export interface Provider {
   model: string;
   configured: boolean;
   cacheNamespace?: string;
+  /** Opt in to identified multi-segment calls; maxCharacters must be at least 2. */
+  batch?: { maxSegments: number; maxCharacters: number };
   translate(segments: Segment[], source: string, target: string, signal: AbortSignal): Promise<Segment[]>;
 }
 export interface TranslationCache {

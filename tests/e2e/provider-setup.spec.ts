@@ -53,7 +53,7 @@ test('a missing Google API key leaves document import available and translation 
   await expect(page.getByRole('dialog').locator('input')).toHaveCount(0);
 });
 
-test('Codex health and setup requests explain the existing GPT-6.1 connection in both languages', async ({ page }) => {
+test('existing Codex configuration remains available without automatically choosing it for setup', async ({ page }) => {
   await page.addInitScript(() => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
       writeText: async (text: string) => { (window as unknown as { copiedCodexSetup: string }).copiedCodexSetup = text; },
@@ -71,10 +71,9 @@ test('Codex health and setup requests explain the existing GPT-6.1 connection in
   await dialog.getByRole('button', { name: 'Copy for your agent', exact: true }).click();
   await expect(dialog.getByRole('status')).toContainText('Copied');
   const copied = await page.evaluate(() => (window as unknown as { copiedCodexSetup: string }).copiedCodexSetup);
-  expect(copied).toContain('existing authorized Codex sign-in');
-  expect(copied).toContain('TRANSLATION_PROVIDER=codex');
-  expect(copied).toContain('CODEX_MODEL=gpt-6.1-sol');
-  expect(copied).toContain('no extra API key or model download');
+  expect(copied).toContain('TRANSLATION_PROVIDER=google-free');
+  expect(copied).toContain('unofficial and potentially throttled');
+  expect(copied).toContain('Do not use Codex as the translation backend unless I explicitly request it');
   await dialog.locator('.manual-setup > summary').click();
   await expect(dialog).toContainText('translations use your existing Codex allowance');
   await expect(dialog).toContainText('model access and usage limits still apply');
@@ -89,4 +88,28 @@ test('Codex health and setup requests explain the existing GPT-6.1 connection in
   await expect(dialog).toContainText('翻译会使用现有 Codex 额度');
   await expect(dialog).toContainText('仍受模型访问权限和用量限制约束');
   await expect(dialog).toContainText('不要将登录令牌复制到 .env 或浏览器');
+});
+
+test('free Google web setup clearly identifies the no-key unofficial service in both languages', async ({ page }) => {
+  await page.route('**/api/health', route => route.fulfill({
+    json: { ok: true, version: '0.1.0', provider: { kind: 'google-free', model: 'web-translate', configured: true } },
+  }));
+  await page.goto('/');
+  await expect(page.locator('.provider-card')).toContainText('Google Translate · free web');
+  await page.locator('.provider-card').click();
+  let dialog = page.getByRole('dialog');
+  await dialog.locator('.manual-setup > summary').click();
+  await expect(dialog).toContainText('No account, API key, local model or billing setup');
+  await expect(dialog).toContainText('unofficial web endpoint');
+  await expect(dialog).toContainText('No automatic switch to a paid provider');
+  await expect(dialog).toContainText('TRANSLATION_PROVIDER=google-free');
+  await expect(dialog.locator('input')).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Close dialog', exact: true }).click();
+  await page.getByTestId('ui-language-zh').click();
+  await expect(page.locator('.provider-card')).toContainText('Google 翻译 · 免费网页接口');
+  await page.locator('.provider-card').click();
+  dialog = page.getByRole('dialog');
+  await dialog.locator('.manual-setup > summary').click();
+  await expect(dialog).toContainText('无需账号、接口密钥、本地模型或开通结算');
+  await expect(dialog).toContainText('非官方网页接口');
 });

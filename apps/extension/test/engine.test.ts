@@ -130,3 +130,129 @@ test('a source paragraph hidden by the host removes its visible translation', as
   assert.equal(engine.status().total, 0);
   engine.restore(); window.close();
 });
+
+test('completed paragraphs render during a running batch and stale progress cannot survive Restore', async () => {
+  const window = new JSDOM('<main><p>First public paragraph.</p><p>Second public paragraph.</p></main>').window;
+  const engine = new PageTranslator(window.document);
+  let notify!: (reply: TranslationReply) => void;
+  let finish!: (reply: TranslationReply) => void;
+  let input: Array<{ id: string; text: string }> = [];
+  engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: (segments, _signal, onProgress) => {
+    input = segments; notify = onProgress!;
+    return new Promise(resolve => { finish = resolve; });
+  } });
+  await waitFor(() => !!finish);
+  assert.equal(window.document.querySelectorAll('[data-oit-pending="true"]').length, 2);
+  const first = { results: [{ id: input[0]!.id, text: 'First translation' }], errors: [] };
+  notify(first);
+  assert.equal(engine.status().translated, 1);
+  assert.equal(window.document.querySelector('[data-oit-owned]')?.textContent, 'First translation');
+  assert.equal(window.document.querySelectorAll('[data-oit-pending="true"]').length, 1);
+  notify(first);
+  assert.equal(window.document.querySelectorAll('[data-oit-owned]').length, 2);
+  engine.restore();
+  const completed = { results: input.map(segment => ({ id: segment.id, text: 'Late translation' })), errors: [] };
+  notify(completed); finish(completed);
+  await sleep(60);
+  assert.equal(window.document.querySelector('[data-oit-owned]'), null);
+  assert.equal(window.document.querySelector('p')?.textContent, 'First public paragraph.');
+  window.close();
+});
+
+test('a later batch failure retains already rendered valid paragraphs', async () => {
+  const window = new JSDOM('<p>First source.</p><p>Second source.</p>').window;
+  const engine = new PageTranslator(window.document);
+  let notify!: (reply: TranslationReply) => void, reject!: (error: Error) => void;
+  let input: Array<{ id: string; text: string }> = [];
+  engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: (segments, _signal, onProgress) => {
+    input = segments; notify = onProgress!;
+    return new Promise((_resolve, fail) => { reject = fail; });
+  } });
+  await waitFor(() => !!reject);
+  notify({ results: [{ id: input[0]!.id, text: 'Valid completed translation' }], errors: [] });
+  reject(new Error('The remaining translation failed'));
+  await waitFor(() => engine.status().failed === 1);
+  assert.equal(engine.status().translated, 1);
+  assert.equal(window.document.querySelector('[data-oit-owned]')?.textContent, 'Valid completed translation');
+  assert.equal(window.document.querySelectorAll('.oit-error').length, 1);
+  engine.restore(); window.close();
+});
+
+test('visible reading content is requested before a long navigation menu', async () => {
+  const window = new JSDOM(`<header><nav>${Array.from({ length: 12 }, (_, i) => `<a href="/${i}">Menu label ${i}</a>`).join(' ')}</nav></header><main><h1>Paper title</h1><p>A public research paragraph.</p></main>`).window;
+  const engine = new PageTranslator(window.document);
+  const calls: string[][] = [];
+  engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: async segments => {
+    calls.push(segments.map(segment => segment.text));
+    return { results: segments, errors: [] };
+  } });
+  await waitFor(() => engine.status().state === 'ready');
+  assert.equal(calls[0]![0], 'Paper title');
+  assert.equal(calls[0]![1], 'A public research paragraph.');
+  engine.restore(); window.close();
+});
+
+test('large page discovery yields and Restore cancels scheduled scan work', async () => {
+  const window = new JSDOM(`<main>${Array.from({ length: 200 }, (_, i) => `<p>Public paragraph ${i}.</p>`).join('')}</main>`).window;
+  const engine = new PageTranslator(window.document);
+  let calls = 0;
+  engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: async segments => {
+    calls++; return { results: segments, errors: [] };
+  } });
+  assert.ok(engine.status().total < 200, 'discovery must yield before serializing the entire page');
+  engine.restore();
+  await sleep(80);
+  assert.equal(engine.status().total, 0);
+  assert.equal(calls, 0);
+  assert.equal(window.document.querySelector('[data-oit-owned]'), null);
+  assert.equal(window.document.querySelectorAll('p').length, 200);
+  window.close();
+});
+
+test('host-cloned pending translations are discarded and Restore removes every owned clone', async () => {
+  const window = new JSDOM('<main><p>Public source paragraph.</p></main>').window;
+  const engine = new PageTranslator(window.document);
+  const finish: Array<() => void> = [];
+  engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: segments => new Promise(resolve => {
+    finish.push(() => resolve({ results: segments.map(segment => ({ id: segment.id, text: 'Valid translation' })), errors: [] }));
+  }) });
+  await waitFor(() => finish.length === 1);
+  window.document.body.replaceWith(window.document.body.cloneNode(true));
+  await sleep(320);
+  engine.restore();
+  for (const resolve of finish) resolve();
+  await sleep(80);
+  assert.equal(window.document.querySelector('[data-oit-owned]'), null);
+  assert.equal(window.document.querySelector('p')?.textContent, 'Public source paragraph.');
+  window.close();
+});
+
+test('a cloned completed body is translated once without keeping duplicate injected results', async () => {
+  const window = new JSDOM('<main><p>Public source paragraph.</p></main>').window;
+  const engine = new PageTranslator(window.document);
+  let calls = 0;
+  engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: async segments => {
+    calls++; return { results: segments.map(segment => ({ id: segment.id, text: 'Valid translation' })), errors: [] };
+  } });
+  await waitFor(() => engine.status().translated === 1);
+  window.document.body.replaceWith(window.document.body.cloneNode(true));
+  await waitFor(() => calls === 2 && engine.status().translated === 1);
+  assert.equal(window.document.querySelectorAll('[data-oit-owned="translation"]').length, 1);
+  engine.restore();
+  assert.equal(window.document.querySelector('[data-oit-owned]'), null);
+  window.close();
+});
+
+test('a reading batch can translate more than eight paragraphs together', async () => {
+  const window = new JSDOM(`<main>${Array.from({ length: 20 }, (_, i) => `<p>Public reading paragraph number ${i}.</p>`).join('')}</main>`).window;
+  const engine = new PageTranslator(window.document);
+  const batches: number[] = [];
+  engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: async segments => {
+    batches.push(segments.length);
+    return { results: segments, errors: [] };
+  } });
+  await waitFor(() => engine.status().translated === 20);
+  assert.ok(batches.some(count => count > 8), 'reading batches should no longer stop after eight paragraphs');
+  assert.ok(batches.every(count => count <= 32), 'page batches remain bounded');
+  engine.restore(); window.close();
+});

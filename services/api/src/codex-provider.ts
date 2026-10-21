@@ -109,7 +109,7 @@ export function codexProvider(environment: NodeJS.ProcessEnv = process.env, runt
   const maximumOutputBytes = Math.min(2 * 1024 * 1024, Math.max(1, runtime.maximumOutputBytes ?? 2 * 1024 * 1024));
   const binaryStamp = executable ? `${statSync(executable).size}:${statSync(executable).mtimeMs}` : 'unavailable';
   return {
-    kind: 'codex', model, configured: Boolean(executable),
+    kind: 'codex', model, configured: Boolean(executable), batch: { maxSegments: 8, maxCharacters: 12_000 },
     cacheNamespace: createHash('sha256').update(JSON.stringify(['codex-cli', executable, binaryStamp, model, INSTRUCTION_VERSION, 'isolated-read-only:low-reasoning'])).digest('hex'),
     async translate(segments, source, target, signal) {
       signal.throwIfAborted();

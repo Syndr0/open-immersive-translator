@@ -65,7 +65,11 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
     response.status(202).json({ jobId: job.id });
     void (async () => {
       job.status = 'running';
-      const result = await broker.translate(input, controller.signal);
+      const result = await broker.translate(input, controller.signal, snapshot => {
+        if (controller.signal.aborted || job.status !== 'running') return;
+        job.result = snapshot;
+        job.completed = snapshot.results.length + snapshot.errors.length;
+      });
       controller.signal.throwIfAborted();
       await store.flushCache();
       controller.signal.throwIfAborted();
@@ -119,9 +123,10 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
       job.status = 'running';
       const units = { ...initial };
       const failures: string[] = [];
-      for (let offset = 0; offset < blocks.length; offset += 8) {
+      const batchSize = Math.max(1, Math.min(32, provider.batch?.maxSegments ?? 8));
+      for (let offset = 0; offset < blocks.length; offset += batchSize) {
         controller.signal.throwIfAborted();
-        const batch = blocks.slice(offset, offset + 8);
+        const batch = blocks.slice(offset, offset + batchSize);
         const result = await broker.translate({ ...input, segments: batch.map(block => ({ id: block.id, text: block.text })) }, controller.signal);
         controller.signal.throwIfAborted();
         if (generations.get(translationKey) !== generation) throw new Error('Translation changed while this job was running; newer edits were preserved');

@@ -16,17 +16,24 @@ async function request(path: string, init: RequestInit = {}): Promise<unknown> {
   return body;
 }
 
-async function start(tabId: number): Promise<unknown> {
+async function start(tabId: number, fromLauncher = false): Promise<unknown> {
   const settings = await getSettings();
-  // Injection is granted only after the user opens the extension on this tab.
-  let injected: chrome.scripting.InjectionResult[];
-  try {
-    injected = await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ['content.js'] });
-  } catch {
-    injected = await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+  let frameIds: number[];
+  if (fromLauncher) {
+    // The declarative top-frame script is already present. Reuse any additional
+    // frames previously injected by the toolbar, without requesting activeTab.
+    frameIds = [...new Set([0, ...await frames.get(tabId)])];
+  } else {
+    // The toolbar's activeTab grant permits explicit injection into allowed frames.
+    let injected: chrome.scripting.InjectionResult[];
+    try {
+      injected = await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files: ['content.js'] });
+    } catch {
+      injected = await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
+    }
+    frameIds = injected.map(item => item.frameId);
+    await chrome.scripting.insertCSS({ target: { tabId, frameIds }, files: ['content.css'] });
   }
-  const frameIds = injected.map(item => item.frameId);
-  await chrome.scripting.insertCSS({ target: { tabId, frameIds }, files: ['content.css'] });
   await frames.remember(tabId, frameIds);
   statuses.set(tabId, new Map());
   const replies = await Promise.allSettled(frameIds.map(frameId => chrome.tabs.sendMessage(tabId, { type: 'oit:start', settings }, { frameId })));
@@ -53,6 +60,13 @@ async function status(tabId: number): Promise<PageStatus> {
 }
 
 async function handle(message: Record<string, unknown>, sender: chrome.runtime.MessageSender): Promise<unknown> {
+  if (message.type === 'oit:launcher-start' || message.type === 'oit:launcher-restore') {
+    const tabId = sender.tab?.id;
+    let protocol: string | undefined;
+    try { protocol = new URL(sender.url || '').protocol; } catch { /* Reject unknown/non-web senders. */ }
+    if (!Number.isInteger(tabId) || Number(tabId) < 0 || sender.frameId !== 0 || !['http:', 'https:'].includes(protocol || '')) throw new Error('Page controls are available only in the top frame of a website tab.');
+    return message.type === 'oit:launcher-start' ? start(tabId!, true) : restore(tabId!);
+  }
   if (message.type === 'oit:status') {
     if (sender.tab?.id !== undefined) {
       const byFrame = statuses.get(sender.tab.id) ?? new Map();

@@ -8,11 +8,11 @@ An independent, MIT-licensed implementation of paragraph-based website translati
 
 ## What works
 
-- **Websites:** translate prose into a bilingual view, retain the original page, restore it, and handle newly inserted content.
+- **Websites:** use a right-side Translate/Restore control, show completed paragraphs progressively in the page's typography, retain the original page, and handle newly inserted content.
 - **Interface:** switch between Chinese and English with the **中 / EN** control. Your choice is saved separately from the document translation language. [中文界面预览](docs/images/workspace-zh.png).
 - **Agent help:** select **Copy for your agent** for guided website/provider setup, or attach a document to your agent and get bilingual files back through the local MCP service. The agent can supply translations using its own model without a separate translation API key.
 - **Documents:** import text PDFs, DOCX, HTML, Markdown and TXT; translate blocks; edit translations; export bilingual HTML/Markdown or print to PDF.
-- **Providers:** an installed Codex CLI, Google Cloud Translation, local Ollama, or a configured compatible chat-completion endpoint. Provider credentials stay in the backend environment.
+- **Providers:** free Google web translation without a key, Google Cloud Translation, local Ollama, an installed Codex CLI, or a compatible chat-completion endpoint. Provider credentials stay in the backend environment.
 - **Shared core:** protected code/math/link tokens, identified results, bounded requests, caching and explicit per-segment failures.
 - **Optional recognition:** use a Docling worker for harder PDFs. The default lightweight PDF parser reads existing text; it does not perform OCR.
 
@@ -35,14 +35,13 @@ npm ci
 cp .env.example .env
 ```
 
-For local translation, install [Ollama](https://ollama.com/), then:
+The example configuration selects the free, unofficial Google web endpoint. Source text is sent to Google when you translate; no key or billing setup is needed. See its availability limits below. Start the app:
 
 ```sh
-ollama pull qwen3.5:2b
 npm run dev
 ```
 
-The default local model is `qwen3.5:2b`; a 7B or larger model is not required. For a smaller download, try `ollama pull qwen3.5:0.8b` and set `OLLAMA_MODEL=qwen3.5:0.8b` in `.env`. Available memory, context length and hardware affect speed and memory use. Smaller models can make more translation or structured-output errors, especially with technical documents. These are setup options, not benchmarked translation-quality recommendations. [Qwen3.5 model catalog](https://ollama.com/library/qwen3.5).
+For offline translation, set `TRANSLATION_PROVIDER=ollama`, install [Ollama](https://ollama.com/) and run `ollama pull qwen3.5:2b` before starting the app. A 7B or larger model is not required. For a smaller download, try `ollama pull qwen3.5:0.8b` and set `OLLAMA_MODEL=qwen3.5:0.8b` in `.env`. Available memory, context length and hardware affect speed and memory use. Smaller models can make more translation or structured-output errors, especially with technical documents. These are setup options, not benchmarked translation-quality recommendations. [Qwen3.5 model catalog](https://ollama.com/library/qwen3.5).
 
 Open **http://127.0.0.1:5173** for the document workspace. The API listens on **http://127.0.0.1:8787**. Choose a target language, import a file and select Translate. Your selected provider must be available for actual translation; there is no silent mock fallback.
 
@@ -54,6 +53,18 @@ npm start
 ```
 
 Open **http://127.0.0.1:8787**. Keep the repository dependencies installed: the API runs TypeScript through `tsx`.
+
+### Free translation without a model or API key
+
+Set this backend value in `.env`, then restart the API:
+
+```dotenv
+TRANSLATION_PROVIDER=google-free
+```
+
+This opt-in adapter sends text to Google's **unofficial web translation endpoint**. It needs no account, API key, model download or billing setup. It batches up to 32 strings within a conservative 12,000-character request budget, validates the response and preserves protected math, code and links. These are this application's bounds, not a published Google quota. Both documents and the extension use it through the same local backend.
+
+This endpoint is undocumented: availability and rate limits can change, and it is not a guaranteed, unlimited free API. Throttling and failures are reported; the app never falls back to Codex or a paid provider. For a supported API, configure Google Cloud below or another provider you control.
 
 ### Use your existing Codex sign-in
 
@@ -96,10 +107,12 @@ The compatible adapter sends chat-completion requests and expects JSON containin
 1. Run `npm run build` and keep the API running.
 2. Open `chrome://extensions`, enable **Developer mode**, and select **Load unpacked**.
 3. Choose this repository's **`apps/extension/dist`** folder.
-4. Open a normal website, select the extension, choose a language and translate.
-5. Use Restore to remove the bilingual additions. The extension's backend and Document app both default to `http://127.0.0.1:8787`. If you use the separate development reader, change Document app to `http://127.0.0.1:5173` in extension settings.
+4. Open or refresh a normal website and click **Translate** on its right edge. Use the extension popup to choose a language.
+5. Use **Restore original page** to remove the bilingual additions; the Translate control remains available. The extension's backend and Document app both default to `http://127.0.0.1:8787`. If you use the separate development reader, change Document app to `http://127.0.0.1:5173` in extension settings.
 
-The extension acts on pages you invoke it on. Browser-internal pages, inaccessible frames, shadow-root content and canvas/image-only text require further integrations. Website text is sent to your configured backend/provider when you translate.
+After rebuilding an installed unpacked extension, click **Reload** on its card in `chrome://extensions`, accept any new site-access prompt, then refresh the website.
+
+The extension installs its control on HTTP/HTTPS pages and requests site access for that purpose. It scans and submits text only after you choose Translate. Browser-internal pages, inaccessible frames, shadow-root content and canvas/image-only text require further integrations. Website text is sent to your configured backend/provider when you translate.
 
 ### Optional Docling parser
 
@@ -113,7 +126,7 @@ npx playwright install chromium
 npm run test:e2e               # browser workflow with an explicit test provider
 ```
 
-Tests use an explicitly selected deterministic demo/fake provider. Demo output is labeled and is not evidence of machine-translation quality. Production defaults to Ollama. Review real translations with your selected model before relying on them.
+Tests use an explicitly selected deterministic demo/fake provider. Demo output is labeled and is not evidence of machine-translation quality. The example configuration selects `google-free`; with no provider setting, the code falls back to Ollama. Review real translations with your selected provider before relying on them.
 
 ```text
 apps/reader       React document workspace

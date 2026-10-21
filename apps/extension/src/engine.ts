@@ -1,4 +1,5 @@
-import { OWNED, owned, paragraphOwner, renderTranslation, scanParagraphs, serializeParagraph, type Serialization } from './dom';
+import { OWNED, owned, paragraphCandidates, paragraphOwner, renderTranslation, scanParagraphs, serializeParagraph, type Serialization } from './dom';
+import { createTranslationPresentation } from './presentation';
 
 export interface TranslationReply {
   results: Array<{ id: string; text: string }>;
@@ -8,7 +9,7 @@ export interface PageStatus { state: 'idle' | 'translating' | 'ready'; total: nu
 export interface EngineOptions {
   targetLanguage: string;
   theme: 'subtle' | 'accent';
-  translate: (segments: Array<{ id: string; text: string }>, signal: AbortSignal) => Promise<TranslationReply>;
+  translate: (segments: Array<{ id: string; text: string }>, signal: AbortSignal, onProgress?: (reply: TranslationReply) => void) => Promise<TranslationReply>;
   onStatus?: (status: PageStatus) => void;
 }
 interface Paragraph {
@@ -19,6 +20,7 @@ interface Paragraph {
   visible: boolean;
   wrapper?: Element;
 }
+interface ScanTask { generation: number; iterator: Generator<Element | null>; candidates: Set<Element>; timer?: ReturnType<typeof setTimeout> }
 
 /** One frame owns this engine, its DOM references and cancellation generation. */
 export class PageTranslator {
@@ -32,6 +34,7 @@ export class PageTranslator {
   private flushTimer?: ReturnType<typeof setTimeout>;
   private mutationTimer?: ReturnType<typeof setTimeout>;
   private dirty = new Set<Element>();
+  private scans = new Map<Element, ScanTask>();
   private options?: EngineOptions;
   private controller = new AbortController();
 
@@ -50,9 +53,14 @@ export class PageTranslator {
           if (record) record.visible = entry.isIntersecting;
         }
         this.schedule();
-      }, { rootMargin: '300px 0px' });
+      }, { rootMargin: '1200px 0px' });
     }
-    if (this.document.body) this.refresh(this.document.body);
+    if (this.document.body) {
+      this.refresh(this.document.body);
+      // Discover the first reading region without waiting behind a large site menu.
+      const reading = this.document.querySelector('main,article,[role="main"],#content');
+      if (reading && reading !== this.document.body) this.refresh(reading);
+    }
     this.observer = new window.MutationObserver(mutations => {
       for (const mutation of mutations) {
         if (owned(mutation.target)) continue;
@@ -75,7 +83,7 @@ export class PageTranslator {
     });
     if (this.document.documentElement) this.observer.observe(this.document.documentElement, {
       subtree: true, characterData: true, childList: true, attributes: true,
-      attributeFilter: ['href', 'src', 'alt', 'title', 'translate', 'contenteditable', 'hidden', 'aria-hidden'],
+      attributeFilter: ['href', 'src', 'alt', 'title', 'translate', 'contenteditable', 'hidden', 'aria-hidden', 'class', 'style'],
     });
     this.report();
   }
@@ -91,7 +99,11 @@ export class PageTranslator {
     this.flushTimer = undefined;
     this.mutationTimer = undefined;
     this.dirty.clear();
+    for (const task of this.scans.values()) clearTimeout(task.timer);
+    this.scans.clear();
     for (const record of this.records.values()) record.wrapper?.remove();
+    // Host applications can clone/replace a subtree containing our injected nodes.
+    for (const element of this.document.querySelectorAll(`[${OWNED}="translation"],[${OWNED}="controls"]`)) element.remove();
     this.records.clear();
     this.busy = false;
     this.report();
@@ -102,39 +114,64 @@ export class PageTranslator {
     const translated = values.filter(record => record.status === 'translated').length;
     const failed = values.filter(record => record.status === 'failed').length;
     const pending = values.length - translated - failed;
-    return { state: !this.enabled ? 'idle' : pending ? 'translating' : 'ready', total: values.length, translated, failed, pending };
+    return { state: !this.enabled ? 'idle' : pending || this.scans.size ? 'translating' : 'ready', total: values.length, translated, failed, pending };
   }
 
   private removeDetached(): void {
     for (const [host, record] of this.records) {
       if (!host.isConnected) { record.wrapper?.remove(); this.records.delete(host); this.intersections?.unobserve(host); }
     }
+    const registered = new Set([...this.records.values()].map(record => record.wrapper).filter(Boolean));
+    for (const element of this.document.querySelectorAll(`[${OWNED}="translation"]`)) if (!registered.has(element)) element.remove();
     this.report();
   }
 
   private refresh(root: Element): void {
-    // Reparse only a dirty layout root. Own translation subtrees are excluded by the scanner.
-    const candidates = new Set(scanParagraphs(root));
-    for (const host of candidates) {
-      const source = serializeParagraph(host);
-      const previous = this.records.get(host);
-      if (previous?.source.signature === source.signature) continue;
-      previous?.wrapper?.remove();
-      const box = host.getBoundingClientRect();
-      const record: Paragraph = {
-        id: `p${this.nextId++}`, host, source, status: 'queued',
-        visible: !this.intersections || (box.top < (this.document.defaultView?.innerHeight ?? 800) + 300 && box.bottom >= -300),
-      };
-      this.records.set(host, record);
-      this.intersections?.observe(host);
+    // Discover and serialize within short tasks, allowing input and rendering on long pages.
+    for (const [other, task] of this.scans) if (other === root || root.contains(other)) {
+      clearTimeout(task.timer); this.scans.delete(other);
     }
-    // A source can become empty or non-translatable without being removed.
-    for (const [host, record] of this.records) {
-      if ((root === host || root.contains(host)) && !candidates.has(host)) {
-        record.wrapper?.remove(); this.records.delete(host); this.intersections?.unobserve(host);
+    const task: ScanTask = { generation: this.generation, iterator: paragraphCandidates(root), candidates: new Set() };
+    this.scans.set(root, task);
+    const step = () => {
+      if (!this.enabled || task.generation !== this.generation || this.scans.get(root) !== task) return;
+      const started = performance.now();
+      let visited = 0;
+      while (true) {
+        const item = task.iterator.next();
+        if (item.done) {
+          this.scans.delete(root);
+          // A concurrent, smaller dirty-root scan may have discovered a new source.
+          // Recheck absent owners before removing their current record.
+          for (const [host, record] of this.records) {
+            if ((root === host || root.contains(host)) && !task.candidates.has(host) && !scanParagraphs(host).includes(host)) {
+              record.wrapper?.remove(); this.records.delete(host); this.intersections?.unobserve(host);
+            }
+          }
+          this.schedule(); this.report();
+          return;
+        }
+        const host = item.value;
+        if (host?.isConnected) {
+          const source = serializeParagraph(host);
+          if (source.sourceText.length >= 2 && /\p{L}/u.test(source.sourceText)) {
+            task.candidates.add(host);
+            const previous = this.records.get(host);
+            if (previous?.source.signature !== source.signature) {
+              previous?.wrapper?.remove();
+              const box = host.getBoundingClientRect();
+              const record: Paragraph = { id: `p${this.nextId++}`, host, source, status: 'queued',
+                visible: !this.intersections || (box.top < (this.document.defaultView?.innerHeight ?? 800) + 1200 && box.bottom >= -1200) };
+              this.records.set(host, record); this.intersections?.observe(host);
+            }
+          }
+        }
+        if (++visited >= 24 || performance.now() - started >= 8) break;
       }
-    }
-    this.schedule();
+      this.schedule(); this.report();
+      task.timer = setTimeout(step, 0);
+    };
+    step();
   }
 
   private schedule(): void {
@@ -148,39 +185,45 @@ export class PageTranslator {
     const generation = this.generation;
     const selected: Paragraph[] = [];
     let size = 0;
-    for (const record of this.records.values()) {
+    // Reading content reaches the provider before short navigation labels.
+    const queued = [...this.records.values()].filter(record => record.status === 'queued' && record.visible);
+    const priority = (record: Paragraph) => {
+      const host = record.host, box = host.getBoundingClientRect();
+      let score = box.top >= (this.document.defaultView?.innerHeight ?? 800) || box.bottom < 0 ? 100 : 0;
+      if (host.closest('main,article,[role="main"]')) score -= 10;
+      if (/^H[1-6]$/.test(host.tagName)) score -= 5;
+      else if (host.matches('p,blockquote,figcaption')) score -= 3;
+      if (host.closest('nav,header,footer,aside,[role="navigation"],[role="banner"],[role="contentinfo"]')) score += 20;
+      if (record.source.sourceText.length < 20 && !/^H[1-6]$/.test(host.tagName)) score += 3;
+      return score;
+    };
+    const priorities = new Map(queued.map(record => [record, priority(record)]));
+    queued.sort((a, b) => priorities.get(a)! - priorities.get(b)!);
+    for (const record of queued) {
       if (record.status !== 'queued' || !record.visible) continue;
       if (record.source.text.length > 20000) {
         record.status = 'failed';
         this.showError(record, 'This paragraph is too long. Split it into smaller blocks.');
         continue;
       }
-      if (selected.length && (selected.length >= 8 || size + record.source.text.length > 12000)) break;
+      if (selected.length && (selected.length >= 32 || size + record.source.text.length > 24000)) break;
       record.status = 'pending'; selected.push(record); size += record.source.text.length;
+      const pending = this.wrapper(record);
+      pending.setAttribute('data-oit-pending', 'true'); pending.setAttribute('aria-busy', 'true');
+      const label = this.document.createElement('span'); label.className = 'oit-loading-label'; label.textContent = 'Translating…';
+      pending.append(label);
     }
     this.report();
     if (!selected.length) return;
     this.busy = true;
     try {
-      const result = await this.options.translate(selected.map(record => ({ id: record.id, text: record.source.text })), this.controller.signal);
+      const result = await this.options.translate(selected.map(record => ({ id: record.id, text: record.source.text })), this.controller.signal,
+        progress => { if (this.enabled && generation === this.generation) this.applyReply(selected, progress, false); });
       if (!this.enabled || generation !== this.generation) return;
-      for (const record of selected) {
-        if (!this.current(record)) continue;
-        const value = result.results.find(item => item.id === record.id);
-        try {
-          if (!value) throw new Error(result.errors.find(item => item.id === record.id)?.message ?? 'The server returned no translation.');
-          const fragment = renderTranslation(record.source, value.text, this.document);
-          const wrapper = this.wrapper(record);
-          wrapper.append(fragment);
-          record.status = 'translated';
-        } catch (error) {
-          record.status = 'failed';
-          this.showError(record, error instanceof Error ? error.message : 'Translation failed.');
-        }
-      }
+      this.applyReply(selected, result, true);
     } catch (error) {
       if (!this.enabled || generation !== this.generation) return;
-      for (const record of selected) if (this.current(record)) {
+      for (const record of selected) if (record.status === 'pending' && this.current(record)) {
         record.status = 'failed';
         this.showError(record, error instanceof Error ? error.message : 'Translation failed.');
       }
@@ -193,6 +236,31 @@ export class PageTranslator {
     }
   }
 
+  private applyReply(selected: Paragraph[], reply: TranslationReply, final: boolean): void {
+    const expected = new Set(selected.map(record => record.id)), seen = new Set<string>();
+    if (!reply || !Array.isArray(reply.results) || !Array.isArray(reply.errors)) throw new Error('The server returned an invalid translation result.');
+    for (const item of [...reply.results, ...reply.errors]) {
+      if (!item || typeof item.id !== 'string' || !expected.has(item.id) || seen.has(item.id)) throw new Error('The server returned duplicate or unknown paragraph IDs.');
+      seen.add(item.id);
+    }
+    if (reply.results.some(item => typeof item.text !== 'string' || !item.text.trim()) || reply.errors.some(item => typeof item.message !== 'string')) throw new Error('The server returned an invalid paragraph result.');
+    for (const record of selected) {
+      if (record.status !== 'pending' || !this.current(record)) continue;
+      const value = reply.results.find(item => item.id === record.id);
+      const error = reply.errors.find(item => item.id === record.id);
+      if (!value && !error && !final) continue;
+      try {
+        if (!value) throw new Error(error?.message ?? 'The server returned no translation.');
+        const fragment = renderTranslation(record.source, value.text, this.document);
+        const wrapper = this.wrapper(record);
+        wrapper.replaceChildren(fragment); record.status = 'translated';
+      } catch (cause) {
+        record.status = 'failed'; this.showError(record, cause instanceof Error ? cause.message : 'Translation failed.');
+      }
+    }
+    this.report();
+  }
+
   private current(record: Paragraph): boolean {
     if (!record.host.isConnected || this.records.get(record.host) !== record) return false;
     if (serializeParagraph(record.host).signature !== record.source.signature) {
@@ -203,13 +271,17 @@ export class PageTranslator {
   }
 
   private wrapper(record: Paragraph): Element {
-    record.wrapper?.remove();
-    const element = this.document.createElement('div');
+    if (record.wrapper?.isConnected) {
+      record.wrapper.removeAttribute('data-oit-pending'); record.wrapper.removeAttribute('aria-busy');
+      record.wrapper.replaceChildren();
+      return record.wrapper;
+    }
+    const { element, placement } = createTranslationPresentation(record.host);
     element.setAttribute(OWNED, 'translation');
     element.className = `oit-translation oit-${this.options?.theme ?? 'subtle'}`;
     element.setAttribute('lang', this.options?.targetLanguage ?? '');
     element.setAttribute('dir', /^(ar|he|fa|ur)(-|$)/.test(this.options?.targetLanguage ?? '') ? 'rtl' : 'auto');
-    if (['TD', 'TH', 'LI', 'DD', 'DT', 'BODY'].includes(record.host.tagName)) record.host.append(element);
+    if (placement === 'append') record.host.append(element);
     else record.host.after(element);
     record.wrapper = element;
     return element;

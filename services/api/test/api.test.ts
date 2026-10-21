@@ -214,3 +214,96 @@ test('website jobs return immediately and cancellation discards a late provider 
     assert.equal(cancelled.status, 'cancelled'); assert.equal(cancelled.result, undefined);
   } finally { release(); api.close(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(dataDir, { recursive: true, force: true }); }
 });
+
+test('website jobs expose cache hits and fast results while another segment remains gated', async () => {
+  const dataDir = await mkdtemp(`${tmpdir()}/oit-web-progress-test-`);
+  let release!: () => void, slowStarted!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { slowStarted = resolve; });
+  const calls: string[] = [];
+  const api = await createApp({ dataDir, provider: { ...fixture, async translate(segments) {
+    calls.push(segments[0]!.text);
+    if (segments[0]!.text === 'Slow source') { slowStarted(); await gate; }
+    return segments.map(segment => ({ ...segment, text: `Translated: ${segment.text}` }));
+  } } });
+  const server = api.app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const post = (path: string, body: unknown) => fetch(`${base}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  try {
+    await post('/api/translate', { targetLanguage: 'fr', segments: [{ id: 'warmup', text: 'Cached source' }] });
+    const response = await post('/api/translation-jobs', { targetLanguage: 'fr', segments: [{ id: 'cached', text: 'Cached source' }, { id: 'fast', text: 'Fast source' }, { id: 'slow', text: 'Slow source' }] });
+    assert.equal(response.status, 202);
+    const { jobId } = await response.json(); await started;
+    let progress;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      progress = await fetch(`${base}/api/jobs/${jobId}`).then(result => result.json());
+      if (progress.completed === 2) break;
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    assert.equal(progress.status, 'running'); assert.equal(progress.total, 3); assert.equal(progress.completed, 2);
+    assert.deepEqual(progress.result.results.map((result: { id: string }) => result.id).sort(), ['cached', 'fast']);
+    assert.equal(progress.result.results.find((result: { id: string }) => result.id === 'cached').cached, true);
+    assert.equal(calls.filter(text => text === 'Cached source').length, 1);
+    release();
+    let final;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      final = await fetch(`${base}/api/jobs/${jobId}`).then(result => result.json());
+      if (final.status === 'completed') break;
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    assert.equal(final.status, 'completed'); assert.equal(final.completed, 3); assert.equal(final.result.results.length, 3);
+  } finally { release(); api.close(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test('cancelling a partially completed website job freezes its validated progress', async () => {
+  const dataDir = await mkdtemp(`${tmpdir()}/oit-web-progress-cancel-`);
+  let release!: () => void, slowStarted!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { slowStarted = resolve; });
+  const api = await createApp({ dataDir, provider: { ...fixture, async translate(segments) {
+    if (segments[0]!.text === 'Slow source') { slowStarted(); await gate; }
+    return segments.map(segment => ({ ...segment, text: `Translated: ${segment.text}` }));
+  } } });
+  const server = api.app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const { jobId } = await fetch(`${base}/api/translation-jobs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ targetLanguage: 'fr', segments: [{ id: 'fast', text: 'Fast source' }, { id: 'slow', text: 'Slow source' }] }) }).then(result => result.json());
+    await started;
+    let progress;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      progress = await fetch(`${base}/api/jobs/${jobId}`).then(result => result.json());
+      if (progress.completed === 1) break;
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    assert.equal(progress.status, 'running'); assert.equal(progress.result.results[0].id, 'fast');
+    await fetch(`${base}/api/jobs/${jobId}/cancel`, { method: 'POST' }); release();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    const cancelled = await fetch(`${base}/api/jobs/${jobId}`).then(result => result.json());
+    assert.equal(cancelled.status, 'cancelled'); assert.equal(cancelled.completed, 1);
+    assert.deepEqual(cancelled.result, progress.result);
+  } finally { release(); api.close(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test('documents use the provider batch capacity instead of a fixed eight-block serial loop', async () => {
+  const dataDir = await mkdtemp(`${tmpdir()}/oit-document-batch-`);
+  const batches: number[] = [];
+  const api = await createApp({ dataDir, provider: { ...fixture, batch: { maxSegments: 32, maxCharacters: 12000 }, async translate(segments) {
+    batches.push(segments.length);
+    return segments.map(segment => ({ ...segment, text: `Translated: ${segment.text}` }));
+  } } });
+  const server = api.app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const source = Array.from({ length: 20 }, (_, i) => `Public document paragraph number ${i}.`).join('\n\n');
+    const { document } = await fetch(`${base}/api/documents`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-File-Name': 'batch.txt' }, body: source }).then(response => response.json());
+    const { jobId } = await fetch(`${base}/api/documents/${document.id}/translate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ targetLanguage: 'fr' }) }).then(response => response.json());
+    let job;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      job = await fetch(`${base}/api/jobs/${jobId}`).then(response => response.json());
+      if (job.status === 'completed' || job.status === 'failed') break;
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    assert.equal(job.status, 'completed'); assert.equal(job.completed, 20);
+    assert.deepEqual(batches, [20]);
+  } finally { api.close(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(dataDir, { recursive: true, force: true }); }
+});

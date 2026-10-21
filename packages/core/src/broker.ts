@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { protect, restore, splitText } from './protection.ts';
-import type { Provider, TranslationCache, TranslationRequest, TranslationResponse } from './types.ts';
+import type { Provider, TranslationCache, TranslationRequest, TranslationResponse, TranslationResult } from './types.ts';
 
 export class MemoryCache implements TranslationCache {
   private values = new Map<string, string>();
@@ -17,56 +17,102 @@ export class TranslationBroker {
   private waiters: Array<{ ready: () => void; abort: () => void; signal: AbortSignal }> = [];
   constructor(readonly provider: Provider, private cache: TranslationCache = new MemoryCache(), private concurrency = 2) {}
 
-  async translate(request: TranslationRequest, signal: AbortSignal = new AbortController().signal): Promise<TranslationResponse> {
-    const response: TranslationResponse = { results: [], errors: [], provider: this.provider.kind, model: this.provider.model };
-    // Share only within this request: callers with independent cancellation own independent work.
-    const inFlight = new Map<string, Promise<string>>();
+  async translate(request: TranslationRequest, signal: AbortSignal = new AbortController().signal, onProgress?: (snapshot: TranslationResponse) => void): Promise<TranslationResponse> {
+    const results = new Map<string, TranslationResult>();
+    const errors = new Map<string, { id: string; message: string }>();
     const ids = new Set<string>();
     for (const segment of request.segments) {
       if (ids.has(segment.id)) throw new Error('Segment IDs must be unique');
       ids.add(segment.id);
     }
-    await Promise.all(request.segments.map(async segment => {
+    const maxSegments = this.provider.batch?.maxSegments ?? 1;
+    const maxCharacters = this.provider.batch?.maxCharacters ?? 3500;
+    if (!Number.isSafeInteger(maxSegments) || maxSegments < 1 || !Number.isSafeInteger(maxCharacters) || maxCharacters < 2) throw new Error('Provider batch limits must be positive integers with at least 2 characters');
+    const metadata = { provider: this.provider.kind, model: this.provider.model };
+    const snapshot = (): TranslationResponse => ({ ...metadata,
+      results: request.segments.flatMap(segment => { const result = results.get(segment.id); return result ? [{ ...result }] : []; }),
+      errors: request.segments.flatMap(segment => { const error = errors.get(segment.id); return error ? [{ ...error }] : []; }),
+    });
+    const emit = () => {
+      // Observers receive independent cumulative values and cannot fail translation.
+      try { onProgress?.(snapshot()); } catch { /* An observer does not own provider work. */ }
+    };
+    interface Work {
+      key: string; aliases: string[]; encoded: ReturnType<typeof protect>;
+      parts: string[]; translated: Array<string | undefined>; remaining: number; settled: boolean;
+    }
+    interface Chunk { id: string; text: string; index: number; work: Work }
+    // Deduplicate only inside this request. Independent callers own cancellation.
+    const workByKey = new Map<string, Work>();
+    const chunks: Chunk[] = [];
+    const fail = (work: Work, error: unknown) => {
+      if (work.settled) return;
+      work.settled = true;
+      for (const id of work.aliases) errors.set(id, { id, message: error instanceof Error ? error.message : 'Translation failed' });
+      emit();
+    };
+    for (const segment of request.segments) {
       try {
         signal.throwIfAborted();
-        if (!segment.text.trim()) { response.results.push({ ...segment, cached: true }); return; }
+        if (!segment.text.trim()) { results.set(segment.id, { ...segment, cached: true }); emit(); continue; }
         const key = createHash('sha256').update(JSON.stringify(['v1', this.provider.cacheNamespace ?? this.provider.kind, this.provider.model, request.sourceLanguage ?? 'auto', request.targetLanguage, segment.text])).digest('hex');
         const cached = this.cache.get(key);
-        if (cached !== undefined) { response.results.push({ id: segment.id, text: cached, cached: true }); return; }
-        let pending = inFlight.get(key);
-        if (!pending) {
-          pending = (async () => {
-            const encoded = protect(segment.text);
-            const parts = splitText(encoded.text);
-            const translated: string[] = [];
-            for (let i = 0; i < parts.length; i++) {
-              signal.throwIfAborted();
-              const id = `${segment.id}:${i}`;
-              const result = await this.withPermit(async () => {
-                signal.throwIfAborted();
-                const outputs = await this.provider.translate([{ id, text: parts[i]! }], request.sourceLanguage ?? 'auto', request.targetLanguage, signal);
-                if (outputs.length !== 1 || outputs[0]?.id !== id || typeof outputs[0].text !== 'string' || !outputs[0].text.trim()) throw new Error('Provider returned missing, duplicate or mismatched segment IDs');
-                return outputs[0].text;
-              }, signal);
-              translated.push(result);
-            }
-            signal.throwIfAborted();
-            const text = restore(translated.join(''), encoded);
-            this.cache.set(key, text);
-            return text;
-          })();
-          inFlight.set(key, pending);
-        }
-        const text = await pending;
-        signal.throwIfAborted();
-        response.results.push({ id: segment.id, text, cached: false });
+        if (cached !== undefined) { results.set(segment.id, { id: segment.id, text: cached, cached: true }); emit(); continue; }
+        const existing = workByKey.get(key);
+        if (existing) { existing.aliases.push(segment.id); continue; }
+        const encoded = protect(segment.text);
+        const parts = splitText(encoded.text, Math.min(3500, maxCharacters));
+        const work: Work = { key, aliases: [segment.id], encoded, parts, translated: new Array(parts.length), remaining: parts.length, settled: false };
+        workByKey.set(key, work);
+        for (let index = 0; index < parts.length; index++) chunks.push({ id: `${segment.id}:${index}`, text: parts[index]!, index, work });
       } catch (error) {
-        response.errors.push({ id: segment.id, message: error instanceof Error ? error.message : 'Translation failed' });
+        errors.set(segment.id, { id: segment.id, message: error instanceof Error ? error.message : 'Translation failed' }); emit();
       }
+    }
+    const batches: Chunk[][] = [];
+    let batch: Chunk[] = [], characters = 0;
+    for (const chunk of chunks) {
+      if (batch.length && (batch.length >= maxSegments || characters + chunk.text.length > maxCharacters)) { batches.push(batch); batch = []; characters = 0; }
+      batch.push(chunk); characters += chunk.text.length;
+    }
+    if (batch.length) batches.push(batch);
+    await Promise.all(batches.map(async batch => {
+      try {
+        await this.withPermit(async () => {
+          signal.throwIfAborted();
+          const pending = batch.filter(chunk => !chunk.work.settled);
+          if (!pending.length) return;
+          const outputs = await this.provider.translate(pending.map(({ id, text }) => ({ id, text })), request.sourceLanguage ?? 'auto', request.targetLanguage, signal);
+          signal.throwIfAborted();
+          const expected = new Set(pending.map(chunk => chunk.id));
+          const byId = new Map<string, string>();
+          if (!Array.isArray(outputs) || outputs.length !== pending.length) throw new Error('Provider returned missing, duplicate or mismatched segment IDs');
+          for (const output of outputs) {
+            if (!output || typeof output.id !== 'string' || typeof output.text !== 'string' || !output.text.trim() || !expected.has(output.id) || byId.has(output.id)) throw new Error('Provider returned missing, duplicate or mismatched segment IDs');
+            byId.set(output.id, output.text);
+          }
+          for (const chunk of pending) {
+            const work = chunk.work;
+            if (work.settled) continue;
+            try {
+              const text = byId.get(chunk.id)!;
+              // Validate each identified chunk before combining the original block.
+              const markers = (value: string) => JSON.stringify((value.match(/⟪OIT_\d+⟫/g) ?? []).sort());
+              if (markers(text) !== markers(chunk.text)) throw new Error('Provider changed or omitted a protected math/code/link token');
+              work.translated[chunk.index] = text; work.remaining--;
+              if (!work.remaining) {
+                const restored = restore(work.translated.join(''), work.encoded);
+                signal.throwIfAborted();
+                this.cache.set(work.key, restored); work.settled = true;
+                for (const id of work.aliases) results.set(id, { id, text: restored, cached: false });
+                emit();
+              }
+            } catch (error) { fail(work, error); }
+          }
+        }, signal);
+      } catch (error) { for (const chunk of batch) fail(chunk.work, error); }
     }));
-    const order = new Map(request.segments.map((s, i) => [s.id, i]));
-    response.results.sort((a, b) => order.get(a.id)! - order.get(b.id)!);
-    return response;
+    return snapshot();
   }
 
   private async withPermit<T>(work: () => Promise<T>, signal: AbortSignal): Promise<T> {

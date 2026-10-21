@@ -6,6 +6,13 @@
   "description": "Bilingual website translation through your own local translation server.",
   "permissions": ["activeTab", "scripting", "storage"],
   "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "content_scripts": [{
+    "matches": ["http://*/*", "https://*/*"],
+    "js": ["content.js"],
+    "css": ["content.css"],
+    "run_at": "document_idle",
+    "all_frames": false
+  }],
   "background": { "service_worker": "background.js" },
   "action": { "default_popup": "popup.html", "default_title": "Open Immersive Translator" },
   "options_page": "options.html",

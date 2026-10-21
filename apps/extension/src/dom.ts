@@ -1,6 +1,10 @@
+import { copyTypography, presentationFingerprint } from './presentation';
+
 export const OWNED = 'data-oit-owned';
 const BLOCK_TAGS = new Set(['P', 'DIV', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'BLOCKQUOTE', 'FIGCAPTION', 'TD', 'TH', 'DD', 'DT', 'SECTION', 'ARTICLE', 'MAIN', 'HEADER', 'FOOTER', 'ASIDE', 'BODY']);
 const SKIP = 'script,style,noscript,template,textarea,input,select,button,pre,[contenteditable]:not([contenteditable="false"]),[translate="no"],.notranslate,[data-oit-ignore]';
+// Ignore injected targets/UI while retaining the coinstalled extension's source nodes.
+const OTHER_TRANSLATOR = 'immersive-translate-target-wrapper,immersive-translate-target-inner,[class*="immersive-translate-target-"],[data-immersive-translate-target],.immersive-translate-loading,.immersive-translate-error,[id^="immersive-translate-"]:not([id^="immersive-translate-original"])';
 const PROTECTED = 'code,kbd,samp,math,.katex,.MathJax,mjx-container,svg,img';
 const INLINE = new Set(['A', 'EM', 'STRONG', 'B', 'I', 'U', 'S', 'SUB', 'SUP', 'MARK', 'SMALL']);
 export const TOKEN = /\[\[OIT_(OPEN|CLOSE|KEEP)_(\d+)\]\]/g;
@@ -21,7 +25,7 @@ export function owned(node: Node | null): boolean {
 }
 
 function excluded(element: Element): boolean {
-  return owned(element) || !!element.closest(SKIP);
+  return owned(element) || !!element.closest(`${SKIP},${OTHER_TRANSLATOR}`);
 }
 
 function isBlock(element: Element): boolean {
@@ -30,11 +34,29 @@ function isBlock(element: Element): boolean {
   return !!style && ['block', 'list-item', 'table-cell', 'flex', 'grid'].includes(style.display);
 }
 
-function hidden(element: Element): boolean {
+/** Detect intentionally hidden source, without excluding ordinary below-fold prose. */
+export function hidden(element: Element): boolean {
   for (let current: Element | null = element; current; current = current.parentElement) {
-    if (current.hasAttribute('hidden') || current.getAttribute('aria-hidden') === 'true') return true;
+    if (current.hasAttribute('hidden') || current.getAttribute('aria-hidden')?.trim().toLowerCase() === 'true') return true;
     const style = current.ownerDocument.defaultView?.getComputedStyle(current);
-    if (style?.display === 'none' || style?.visibility === 'hidden') return true;
+    if (!style) continue;
+    if (style.display === 'none' || ['hidden', 'collapse'].includes(style.visibility) || style.opacity === '0' || style.getPropertyValue('content-visibility') === 'hidden') return true;
+    const positioned = ['absolute', 'fixed'].includes(style.position);
+    const clip = style.clip.trim().toLowerCase();
+    const clipPath = style.getPropertyValue('clip-path').replace(/\s/g, '').toLowerCase();
+    const tiny = parseFloat(style.width) <= 1 && parseFloat(style.height) <= 1;
+    const rect = clip.match(/^rect\(([^)]+)\)$/)?.[1].split(/[,\s]+/).map(value => parseFloat(value));
+    const zeroClip = !!rect && rect.length === 4 && rect.every(Number.isFinite) && rect[1] - rect[3] <= 1 && rect[2] - rect[0] <= 1;
+    const clipped = zeroClip || /^inset\(50%(?:[^)]*)\)$/.test(clipPath);
+    if (clipped && (positioned || tiny || clipPath.startsWith('inset(50%'))) return true;
+    if (positioned && tiny && [style.overflow, style.overflowX, style.overflowY].some(value => ['hidden', 'clip'].includes(value))) return true;
+    if (positioned && [style.left, style.right, style.top, style.bottom, style.getPropertyValue('inset-inline-start')].some(value => parseFloat(value) <= -1000)) return true;
+    const fragmentLink = current.tagName === 'A' && current.getAttribute('href')?.startsWith('#');
+    if (positioned && fragmentLink && [style.left, style.top].some(value => parseFloat(value) < 0)) return true;
+    // Skip-link conventions use large transforms, not normal page scrolling.
+    const translation = style.transform.match(/translate(?:X|Y)?\(\s*(-?\d+(?:\.\d+)?)px/i);
+    if (positioned && translation && Number(translation[1]) <= -1000) return true;
+    if (positioned && fragmentLink && /translate(?:X|Y)?\(\s*-/.test(style.transform)) return true;
   }
   return false;
 }
@@ -49,19 +71,25 @@ export function paragraphOwner(node: Node): Element | null {
 }
 
 /** Group nested inline text by its nearest layout block; never split link text into a separate request. */
-export function scanParagraphs(root: Element): Element[] {
+export function* paragraphCandidates(root: Element): Generator<Element | null> {
   const document = root.ownerDocument;
   const walker = document.createTreeWalker(root, 4);
-  const result = new Set<Element>();
+  const seen = new Set<Element>();
+  let visits = 0;
   let node: Node | null;
   while ((node = walker.nextNode())) {
+    if (++visits % 128 === 0) yield null;
     const parent = node.parentElement;
-    if (!parent || !node.textContent?.trim() || excluded(parent) || parent.closest(PROTECTED)) continue;
+    if (!parent || !node.textContent?.trim() || excluded(parent) || parent.closest(PROTECTED) || hidden(parent)) continue;
     const owner = paragraphOwner(node);
-    if (!owner || excluded(owner) || hidden(owner)) continue;
-    result.add(owner);
+    if (!owner || seen.has(owner) || excluded(owner) || hidden(owner)) continue;
+    seen.add(owner);
+    yield owner;
   }
-  return [...result].filter(element => {
+}
+
+export function scanParagraphs(root: Element): Element[] {
+  return [...paragraphCandidates(root)].filter((element): element is Element => !!element).filter(element => {
     const value = serializeParagraph(element).sourceText.trim();
     return value.length >= 2 && /\p{L}/u.test(value);
   });
@@ -76,7 +104,7 @@ export function serializeParagraph(host: Element): Serialization {
     if (node.nodeType === 3) { sourceText += node.textContent ?? ''; return node.textContent ?? ''; }
     if (node.nodeType !== 1) return '';
     const element = node as Element;
-    if (excluded(element) || (element !== host && isBlock(element))) return '';
+    if (excluded(element) || hidden(element) || (element !== host && isBlock(element))) return '';
     if (element.matches(PROTECTED)) {
       const id = next++;
       protectedNodes.set(id, element);
@@ -85,7 +113,7 @@ export function serializeParagraph(host: Element): Serialization {
     }
     if (element.tagName === 'BR') { sourceText += '\n'; return '\n'; }
     const content = () => [...element.childNodes].map(visit).join('');
-    if (element !== host && INLINE.has(element.tagName)) {
+    if (INLINE.has(element.tagName) && (element !== host || element.tagName === 'A')) {
       const id = next++;
       templates.set(id, element);
       return `[[OIT_OPEN_${id}]]${content()}[[OIT_CLOSE_${id}]]`;
@@ -95,7 +123,8 @@ export function serializeParagraph(host: Element): Serialization {
   const text = visit(host).trim();
   const signature = JSON.stringify([
     text,
-    ['hidden', 'aria-hidden', 'translate', 'contenteditable'].map(name => [name, host.getAttribute(name)]),
+    ['hidden', 'aria-hidden', 'translate', 'contenteditable', 'class', 'style'].map(name => [name, host.getAttribute(name)]),
+    presentationFingerprint(host),
     [...templates].map(([id, element]) => [id, element.tagName, element.getAttributeNames().map(name => [name, element.getAttribute(name)])]),
     [...protectedNodes].map(([id, element]) => [id, element.outerHTML]),
   ]);
@@ -104,7 +133,24 @@ export function serializeParagraph(host: Element): Serialization {
 
 let cloneSequence = 0;
 function safeClone(source: Element, deep: boolean): Element {
-  const clone = source.cloneNode(deep) as Element;
+  const clone = deep ? source.cloneNode(true) as Element : source.ownerDocument.createElement(source.tagName.toLowerCase());
+  if (deep && source.matches('code,kbd,samp')) {
+    // A hidden code label may depend on an original ancestor selector that no
+    // longer matches the clone. Omit it rather than accidentally revealing it.
+    const originals = [...source.querySelectorAll('*')];
+    const copies = [...clone.querySelectorAll('*')];
+    originals.forEach((element, index) => {
+      if (excluded(element) || hidden(element)) copies[index]?.remove();
+    });
+    copyTypography(source, clone as HTMLElement);
+  }
+  if (!deep) {
+    for (const name of ['href', 'target', 'rel', 'title', 'lang', 'dir']) {
+      const value = source.getAttribute(name);
+      if (value !== null) clone.setAttribute(name, value);
+    }
+    copyTypography(source, clone as HTMLElement);
+  }
   const ids = new Map<string, string>();
   if (deep) {
     const prefix = `oit-protected-${++cloneSequence}-`;

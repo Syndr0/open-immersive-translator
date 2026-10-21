@@ -1,6 +1,17 @@
-# Initial verification
+# Verification
 
-Version: 0.1.0. Local checks performed during implementation:
+## Website and free-provider upgrade — 2026-10-21
+
+- `npm run verify` passed: strict TypeScript, **172 unit/integration tests**, and production reader/extension builds. `npm run test:e2e` passed all **18 Chromium browser tests**, including a trusted-click launcher start/Restore test and rejection of synthetic page-script clicks. Browser tests emulate Chrome message transport; they do not establish native toolbar installation or permission-dialog behavior.
+- The running production backend was switched from Codex to `google-free` without removing other settings. Health reports `google-free / web-unofficial`. This is Google's undocumented no-key web endpoint, not the billed Cloud Translation API; no account, key or paid service was created. There is no automatic Codex or paid-provider fallback.
+- A real production short-job request translated 20 distinct public English paragraphs to Simplified Chinese in **664 ms** with zero errors. This was a small sample, not a full-page cold benchmark or a guarantee of latency. The final paragraph retained `$E=mc^2$`, `` `x = 1` `` and `https://example.org/research`. Example result: “开放知识有助于人们相互学习。”
+- A public Markdown document with 21 blocks translated and exported bilingual HTML successfully through that same production backend. It completed in 729 ms; 20 paragraphs repeated the preceding request and could use cache, so this is not an independent cold document benchmark. The sample remains available in the local reader.
+- The free-provider contract tests cover true repeated-field batching (80 segments split into 32/32/16), auto-detection response shape, language aliases, malformed counts, protected tokens, cancellation, redacted errors, and rate-limit behavior. Bounds of 32 strings / 12,000 characters are application budgets, not published Google quotas.
+- Website improvements include source-matching typography, hidden-content filtering, cumulative partial results, a 32-paragraph page batch limit, reading-ahead discovery, and a persistent right-edge Translate/Restore control. Tests preserve original node identity and verify restoration, source edits, late results, and host body replacements. Browser-internal extension Reload and permission dialogs require a manual Chrome step because the browser controller blocks those pages.
+
+## Initial implementation checks
+
+Version: 0.1.0. Local checks performed during initial implementation:
 
 - TypeScript strict checking and production reader/extension builds passed.
 - 94 unit/integration tests passed: inline protection, original DOM identity/restoration, dynamic changes, source-version guards, short-job transport/cancellation, provider HTTP contracts, cache identity, queued cancellation, document import/edit/persistence, partial export policy, protected agent batch saves, constrained agent file/API operations, and Codex subprocess isolation, validation, cancellation, limits and redacted errors.
@@ -11,7 +22,7 @@ Version: 0.1.0. Local checks performed during implementation:
 - A local text-extraction check of the supplied 15-page scientific PDF produced 63 blocks and 51,337 characters. This verifies basic extraction, not reading-order accuracy, formula recovery or OCR.
 - Desktop and mobile layouts were visually inspected. The README screenshot shows the actual built app.
 
-Deterministic providers are explicitly selected for automated tests. Ollama/compatible wire formats are tested against local HTTP fixtures, and the Google Cloud Translation contract is tested with intercepted fetch responses. No live Google credentials or running local model were available for translation-quality assessment. The smaller Ollama default is a configuration choice, not a measured hardware or quality claim. The optional Docling model pipeline was not installed/executed in these lightweight checks.
+Deterministic providers are explicitly selected for automated tests. Ollama/compatible wire formats are tested against local HTTP fixtures, and the Google Cloud Translation contract is tested with intercepted fetch responses. No live Google Cloud credentials or running local model were available for translation-quality assessment. The later no-key Google web test is described above. The smaller Ollama default is a configuration choice, not a measured hardware or quality claim. The optional Docling model pipeline was not installed/executed in these lightweight checks.
 
 Known dependency-audit result at creation: three moderate advisories follow Mammoth's CLI-only `argparse` → `sprintf-js` dependency chain. This application calls Mammoth's text-extraction library and does not run its CLI. No patched upstream version was available from the registry at inspection. Track upstream rather than downgrading the parser to an obsolete version. The current PDF.js dependency is beyond the reported vulnerable range.
 
