@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
-test('native MV3 launcher recovers an offline backend and keeps translations inside body through root mutations', async ({ request }, testInfo) => {
+test('native MV3 launcher recovers offline, handles root mutations and waits correctly for scrolling', async ({ request }, testInfo) => {
   // This is a fresh automated Chromium profile with the actual unpacked extension.
   // It does not access or validate the user's installed Chrome extension/profile.
   const health = await (await request.get('/api/health')).json();
@@ -84,6 +84,23 @@ test('native MV3 launcher recovers an offline backend and keeps translations ins
     await expect(launcher).toHaveCount(1);
     await expect(launcher.getByRole('button', { name: 'Translate this page', exact: true })).toBeVisible();
     expect(await page.locator('#original').innerHTML()).toBe(original);
+
+    await page.route('https://example.org/native-scroll-waiting', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><html lang="en"><body><main><p id="near-native">Near native public paragraph.</p><div aria-hidden="true" style="height:4800px"></div><p id="far-native">Far native public paragraph.</p></main></body></html>' }));
+    await page.goto('https://example.org/native-scroll-waiting');
+    const waitingOriginal = await page.locator('main').innerHTML();
+    await launcher.getByRole('button', { name: 'Translate this page', exact: true }).click();
+    await expect(page.locator('#near-native + [data-oit-owned="translation"]')).toContainText('[Demo');
+    await expect(launcher.getByRole('status')).toHaveText('1 of 2 paragraphs translated · 1 remaining. Scroll to translate more.');
+    await expect(launcher.locator('.label')).toHaveText('Ready');
+    await expect(launcher.locator('[data-action="translate"]')).toHaveAttribute('aria-busy', 'false');
+    await expect(launcher.locator('.rail')).not.toHaveClass(/working/);
+    await expect(page.locator('[data-oit-pending="true"]')).toHaveCount(0);
+    await page.locator('#far-native').scrollIntoViewIfNeeded();
+    await expect(page.locator('#far-native + [data-oit-owned="translation"]')).toContainText('[Demo');
+    await expect(launcher.getByRole('status')).toHaveText('2 of 2 paragraphs translated');
+    await expect(launcher.locator('.label')).toHaveText('Translated');
+    await launcher.getByRole('button', { name: 'Restore original page' }).click();
+    expect(await page.locator('main').innerHTML()).toBe(waitingOriginal);
     expect(errors).toEqual([]);
   } finally {
     await testInfo.attach('native-extension-diagnostics', { body: JSON.stringify({ extensionPath, workerUrl, errors, modelInputCount: inputs.length }, null, 2), contentType: 'application/json' });

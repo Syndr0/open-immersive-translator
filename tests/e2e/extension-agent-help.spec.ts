@@ -8,6 +8,7 @@ interface PopupFixtureState {
   messages: string[];
   optionsOpened: number;
   failAction?: string;
+  pageStatus?: { state: 'waiting' | 'translating' | 'ready'; total: number; translated: number; failed: number; pending: number };
 }
 
 async function openPopupFixture(page: Page, health: PopupHealth): Promise<void> {
@@ -29,7 +30,7 @@ async function openPopupFixture(page: Page, health: PopupHealth): Promise<void> 
             return { ok: fixture.health !== 'invalid', provider: { kind: 'google-free', model: 'web-unofficial', configured: fixture.health !== 'unconfigured' } };
           }
           if (message.type === 'oit:settings') return { backendUrl: 'http://127.0.0.1:8787', readerUrl: 'http://127.0.0.1:8787', targetLanguage: 'zh-Hans', sourceLanguage: 'auto', theme: 'subtle' };
-          if (message.type === 'oit:tab-status') return { state: 'idle', total: 0, translated: 0, failed: 0, pending: 0 };
+          if (message.type === 'oit:tab-status') return fixture.pageStatus || { state: 'idle', total: 0, translated: 0, failed: 0, pending: 0 };
           return {};
         },
       },
@@ -82,6 +83,20 @@ test('built popup automatically recovers offline to healthy and disables transla
   expect(fixture.optionsOpened).toBe(1);
   expect(fixture.messages).not.toContain('oit:start-tab');
   expect(errors).toEqual([]);
+});
+
+test('popup tells deferred content apart from requests still running', async ({ page }) => {
+  await openPopupFixture(page, 'healthy');
+  await expect(page.locator('#translate')).toBeEnabled();
+  await page.evaluate(() => { (window as unknown as { popupFixture: PopupFixtureState }).popupFixture.pageStatus = { state: 'waiting', total: 2, translated: 1, failed: 0, pending: 1 }; });
+  await page.clock.runFor(1200);
+  await expect(page.locator('#status')).toHaveText('1 of 2 paragraphs translated · Ready. Scroll to translate more.');
+  await page.evaluate(() => { (window as unknown as { popupFixture: PopupFixtureState }).popupFixture.pageStatus!.state = 'translating'; });
+  await page.clock.runFor(1200);
+  await expect(page.locator('#status')).toHaveText('1 of 2 paragraphs translated · 1 remaining');
+  await page.evaluate(() => { (window as unknown as { popupFixture: PopupFixtureState }).popupFixture.pageStatus = { state: 'ready', total: 2, translated: 2, failed: 0, pending: 0 }; });
+  await page.clock.runFor(1200);
+  await expect(page.locator('#status')).toHaveText('2 of 2 paragraphs translated');
 });
 
 test('built popup requires both successful health and a configured provider', async ({ page }) => {

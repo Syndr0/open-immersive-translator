@@ -5,7 +5,7 @@ export interface TranslationReply {
   results: Array<{ id: string; text: string }>;
   errors: Array<{ id: string; message: string }>;
 }
-export interface PageStatus { state: 'idle' | 'translating' | 'ready'; total: number; translated: number; failed: number; pending: number; error?: string }
+export interface PageStatus { state: 'idle' | 'translating' | 'waiting' | 'ready'; total: number; translated: number; failed: number; pending: number; error?: string }
 export interface EngineOptions {
   targetLanguage: string;
   theme: 'subtle' | 'accent';
@@ -54,7 +54,7 @@ export class PageTranslator {
           const record = this.records.get(entry.target);
           if (record) record.visible = entry.isIntersecting;
         }
-        this.schedule();
+        this.schedule(); this.report();
       }, { rootMargin: '1200px 0px' });
     }
     if (this.document.body) {
@@ -118,7 +118,8 @@ export class PageTranslator {
     const failed = values.filter(record => record.status === 'failed').length;
     const pending = values.length - translated - failed;
     const error = this.pausedError || values.find(record => record.status === 'failed')?.error;
-    return { state: !this.enabled ? 'idle' : pending || this.scans.size ? 'translating' : 'ready', total: values.length, translated, failed, pending, ...(error ? { error } : {}) };
+    const active = this.busy || this.scans.size > 0 || values.some(record => record.status === 'pending' || (record.status === 'queued' && record.visible));
+    return { state: !this.enabled ? 'idle' : active ? 'translating' : pending ? 'waiting' : 'ready', total: values.length, translated, failed, pending, ...(error ? { error } : {}) };
   }
 
   private removeDetached(): void {

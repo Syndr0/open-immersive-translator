@@ -1,5 +1,11 @@
 # Verification
 
+## Deferred-page status — 2026-10-21
+
+- Fixed the page control's endless spinner when nearby paragraphs were finished but offscreen paragraphs remained queued. The engine now distinguishes active translation, waiting for scrolling and full completion. The control shows Ready with a scroll hint while waiting; the popup and combined frame status preserve the same distinction. Deferred paragraphs still translate automatically when they approach the viewport.
+- Strict TypeScript, production builds, **207 unit/integration tests** and **24 browser tests** passed. Regressions cover zero network requests for deferred-only content, visibility-driven resumption, Restore while waiting, aggregation across frames and the popup's active/deferred distinction. The real-browser long-page test holds the resumed request open to verify that the spinner is active only during work. The actual unpacked MV3 extension also reaches waiting, resumes on scroll and restores the original fixture HTML in an isolated Chromium profile.
+- No provider, credential or backend setting changed. Chrome must reload the rebuilt extension and refresh existing website tabs to replace their old content scripts. These automated results do not establish the user's installed Chrome state before that manual reload.
+
 ## HTML-aware no-key translation — 2026-10-21
 
 - The `google-free` adapter now independently uses the no-key Google HTML protocol found in the original extension's alternate Google path: `translate.googleapis.com/translate_a/t`, `client=gtx`, `format=html`. Source markup is escaped; protected tokens use local HTML envelopes; returned markup is validated and converted to plain text before rendering. Its cache namespace differs from the earlier plain-text adapter. No original bundled key/token or private gateway is used.

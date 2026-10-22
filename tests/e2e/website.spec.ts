@@ -218,3 +218,41 @@ test('automatic launcher is passive until a trusted Translate click and remains 
   await expect(launcher.getByRole('button', { name: 'Translate this page', exact: true })).toBeVisible();
   expect(await page.locator('#passive-source').innerHTML()).toBe(original);
 });
+
+test('long-page translation stops spinning while offscreen content waits and resumes on scroll', async ({ page }) => {
+  let starts = 0;
+  let release!: () => void;
+  const secondRequest = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/api/translation-jobs', async route => {
+    starts++;
+    if (starts === 2) await secondRequest;
+    await route.continue();
+  });
+  await page.route('**/scroll-waiting-fixture', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><html lang="en"><body><main><p id="near">A nearby public paragraph.</p><div aria-hidden="true" style="height:4800px"></div><p id="far">An offscreen public paragraph.</p></main></body></html>' }));
+  await installChromeTransport(page);
+  await page.goto('/scroll-waiting-fixture');
+  const original = await page.locator('main').innerHTML();
+  await installBuiltTranslator(page);
+  const launcher = page.locator('[data-oit-launcher]');
+  await launcher.getByRole('button', { name: 'Translate this page', exact: true }).click();
+  await expect(page.locator('#near + [data-oit-owned="translation"]')).toContainText('[Demo');
+  await expect(launcher.getByRole('status')).toHaveText('1 of 2 paragraphs translated · 1 remaining. Scroll to translate more.');
+  await expect(launcher.locator('.label')).toHaveText('Ready');
+  await expect(launcher.locator('.rail')).not.toHaveClass(/working/);
+  await expect(launcher.locator('[data-action="translate"]')).toHaveAttribute('aria-busy', 'false');
+  await expect(page.locator('[data-oit-pending="true"]')).toHaveCount(0);
+  expect(starts).toBe(1);
+  try {
+    await page.locator('#far').scrollIntoViewIfNeeded();
+    await expect.poll(() => starts).toBe(2);
+    await expect(launcher.locator('.label')).toHaveText('Translating');
+    await expect(launcher.locator('[data-action="translate"]')).toHaveAttribute('aria-busy', 'true');
+  } finally { release(); }
+  await expect(page.locator('#far + [data-oit-owned="translation"]')).toContainText('[Demo');
+  await expect(launcher.getByRole('status')).toHaveText('2 of 2 paragraphs translated');
+  await expect(launcher.locator('.label')).toHaveText('Translated');
+  await expect(launcher.locator('[data-action="translate"]')).toHaveAttribute('aria-busy', 'false');
+  await launcher.getByRole('button', { name: 'Restore original page' }).click();
+  await expect(page.locator('[data-oit-owned="translation"]')).toHaveCount(0);
+  expect(await page.locator('main').innerHTML()).toBe(original);
+});

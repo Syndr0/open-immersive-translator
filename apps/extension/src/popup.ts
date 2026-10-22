@@ -27,7 +27,7 @@ async function send(message: Record<string, unknown>): Promise<any> {
 async function updateStatus(): Promise<void> {
   if (tabId === undefined) return;
   const value = await send({ type: 'oit:tab-status', tabId }) as PageStatus;
-  status.textContent = value.state === 'idle' ? 'The original page stays intact.' : `${value.translated} of ${value.total} paragraphs translated${value.failed ? ` · ${value.failed} unavailable` : ''}${value.pending ? ' · Scroll to translate more' : ''}`;
+  status.textContent = value.state === 'idle' ? 'The original page stays intact.' : `${value.translated} of ${value.total} paragraphs translated${value.failed ? ` · ${value.failed} unavailable` : ''}${value.state === 'waiting' ? ' · Ready. Scroll to translate more.' : value.pending ? ` · ${value.pending} remaining` : ''}`;
   if (value.error) status.textContent += ` · ${value.error}`;
 }
 async function updateConnection(): Promise<void> {

@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
 import { build } from 'esbuild';
+import type { PageStatus } from '../src/engine';
 
 const bundle = (await build({ entryPoints: [fileURLToPath(new URL('../src/background.ts', import.meta.url))], bundle: true, write: false, platform: 'browser', format: 'iife' })).outputFiles[0]!.text;
 const plain = <T>(value: T): T => JSON.parse(JSON.stringify(value));
@@ -13,6 +14,7 @@ function background(fetcher: () => Promise<unknown> = async () => ({ ok: true, p
   const sent: Array<{ tabId: number; message: { type: string; settings?: { backendUrl: string; targetLanguage: string } }; frameId: number }> = [];
   const injections: unknown[] = [], styles: unknown[] = [];
   const session: Record<string, unknown> = {};
+  const frameStates = new Map<number, PageStatus>();
   let fetches = 0;
   const chrome = {
     runtime: { onMessage: { addListener(value: typeof listener) { listener = value; } } },
@@ -24,19 +26,32 @@ function background(fetcher: () => Promise<unknown> = async () => ({ ok: true, p
       async executeScript(options: unknown) { injections.push(plain(options)); return [{ frameId: 0 }, { frameId: 3 }]; },
       async insertCSS(options: unknown) { styles.push(plain(options)); },
     },
-    tabs: { async sendMessage(tabId: number, message: typeof sent[number]['message'], options: { frameId: number }) { sent.push(plain({ tabId, message, frameId: options.frameId })); return { ok: true }; }, onRemoved: { addListener() {} } },
+    tabs: { async sendMessage(tabId: number, message: typeof sent[number]['message'], options: { frameId: number }) { sent.push(plain({ tabId, message, frameId: options.frameId })); return message.type === 'oit:page-status' ? frameStates.get(options.frameId) : { ok: true }; }, onRemoved: { addListener() {} } },
   };
   runInNewContext(bundle, { chrome, URL, AbortSignal, fetch: async () => {
     fetches++;
     const body = await fetcher();
     return { ok: true, json: async () => body };
   } });
-  return { sent, injections, styles, session, fetches: () => fetches,
-    send: (message: unknown, sender: unknown) => new Promise<{ error?: string; ok?: boolean; frames?: number }>(resolve => { assert.equal(listener(message, sender, value => resolve(value as never)), true); }),
+  return { sent, injections, styles, session, frameStates, fetches: () => fetches,
+    send: (message: unknown, sender: unknown) => new Promise<Partial<PageStatus> & { error?: string; ok?: boolean; frames?: number }>(resolve => { assert.equal(listener(message, sender, value => resolve(value as never)), true); }),
   };
 }
 
 const sender = { tab: { id: 12 }, frameId: 0, url: 'https://example.org/article' };
+
+test('combined frame status distinguishes waiting from active translation and completion', async () => {
+  const worker = background();
+  await worker.send({ type: 'oit:start-tab', tabId: 12 }, {});
+  worker.frameStates.set(0, { state: 'waiting', total: 2, translated: 1, failed: 0, pending: 1 });
+  worker.frameStates.set(3, { state: 'ready', total: 1, translated: 1, failed: 0, pending: 0 });
+  assert.deepEqual(plain(await worker.send({ type: 'oit:tab-status', tabId: 12 }, {})), { state: 'waiting', total: 3, translated: 2, failed: 0, pending: 1 });
+  worker.frameStates.set(3, { state: 'translating', total: 1, translated: 0, failed: 0, pending: 1 });
+  assert.equal((await worker.send({ type: 'oit:tab-status', tabId: 12 }, {})).state, 'translating');
+  worker.frameStates.set(0, { state: 'ready', total: 2, translated: 2, failed: 0, pending: 0 });
+  worker.frameStates.set(3, { state: 'ready', total: 1, translated: 1, failed: 0, pending: 0 });
+  assert.deepEqual(plain(await worker.send({ type: 'oit:tab-status', tabId: 12 }, {})), { state: 'ready', total: 3, translated: 3, failed: 0, pending: 0 });
+});
 
 test('manifest passively installs the top-frame launcher and CSS on HTTP(S) websites', async () => {
   const manifest = JSON.parse(await readFile(new URL('../public/manifest.json', import.meta.url), 'utf8'));

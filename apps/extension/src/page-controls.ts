@@ -110,6 +110,9 @@ export function createPageControls(document: Document, actions: PageControlActio
     if (starting) return 'Starting translation…';
     if (value.state === 'idle') return 'Translate this page with your configured translation service.';
     const counts = `${value.translated} of ${value.total} paragraphs translated${value.failed ? ` · ${value.failed} unavailable` : ''}${value.pending ? ` · ${value.pending} remaining` : ''}`;
+    if (value.state === 'waiting') return value.failed
+      ? `${counts}. ${value.error || 'Some paragraphs could not be translated.'} Choose Retry to try again, or scroll to translate more.`
+      : `${counts}. Scroll to translate more.`;
     if (value.failed && !value.pending) return `${counts}. ${value.error || 'Some paragraphs could not be translated.'} Original text is preserved. Choose Retry to try again.`;
     return counts;
   }
@@ -124,13 +127,13 @@ export function createPageControls(document: Document, actions: PageControlActio
     translate.disabled = working || restoring;
     translate.setAttribute('aria-label', retry ? 'Retry page translation' : hasTranslation ? value.state === 'translating' ? 'Translation in progress' : 'Translate this page again' : 'Translate this page');
     translate.setAttribute('aria-busy', String(working));
-    label.textContent = restoring ? 'Restoring' : starting ? 'Starting' : value.state === 'translating' ? 'Translating' : retry ? 'Retry' : hasTranslation ? 'Translated' : 'Translate';
+    label.textContent = restoring ? 'Restoring' : starting ? 'Starting' : value.state === 'translating' ? 'Translating' : retry ? 'Retry' : value.state === 'waiting' ? 'Ready' : hasTranslation ? 'Translated' : 'Translate';
     progress.textContent = `${value.translated}/${value.total}`;
     progress.hidden = !hasTranslation || starting || restoring;
     restore.hidden = !hasTranslation && !restoring;
     restore.disabled = restoring;
     const text = summary(); status.textContent = text; detail.textContent = text;
-    translate.title = retry ? text : hasTranslation && !working ? 'Translate this page again' : text;
+    translate.title = retry || value.state === 'waiting' ? text : hasTranslation && !working ? 'Translate this page again' : text;
     restore.title = 'Remove translations and show the original page';
   }
 

@@ -10,6 +10,27 @@ const idle: PageStatus = { state: 'idle', total: 0, translated: 0, failed: 0, pe
 const selector = '[data-oit-owned="launcher"][data-oit-launcher]';
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
+test('deferred content shows Ready without a spinner and active work resumes before final completion', () => {
+  const window = new JSDOM('<p>Public source.</p>').window;
+  const controls = createPageControls(window.document, { start: () => {}, restore: () => {} });
+  const root = window.document.querySelector(selector)!.shadowRoot!;
+  controls.update({ state: 'waiting', total: 2, translated: 1, failed: 0, pending: 1 });
+  const translate = root.querySelector('[data-action="translate"]') as HTMLButtonElement;
+  assert.equal(root.querySelector('.label')?.textContent, 'Ready');
+  assert.equal(root.querySelector('.rail')?.classList.contains('working'), false);
+  assert.equal(translate.getAttribute('aria-busy'), 'false');
+  assert.equal(translate.disabled, false);
+  assert.match(root.querySelector('[role="status"]')!.textContent!, /1 of 2.*1 remaining.*Scroll to translate more/);
+  controls.update(translating);
+  assert.equal(root.querySelector('.label')?.textContent, 'Translating');
+  assert.equal(root.querySelector('.rail')?.classList.contains('working'), true);
+  assert.equal(translate.getAttribute('aria-busy'), 'true');
+  controls.update(ready);
+  assert.equal(root.querySelector('.label')?.textContent, 'Translated');
+  assert.equal(root.querySelector('[role="status"]')?.textContent, '2 of 2 paragraphs translated');
+  controls.remove(); window.close();
+});
+
 test('launcher exists while idle without invoking actions or altering original content', () => {
   const window = new JSDOM('<main><p>Original source.</p></main>').window;
   const original = window.document.querySelector('p')!;

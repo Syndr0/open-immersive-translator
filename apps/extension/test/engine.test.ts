@@ -12,6 +12,64 @@ async function waitFor(check: () => boolean, timeout = 2000): Promise<void> {
 }
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+test('offscreen queued paragraphs wait without active translation and resume on intersection', async () => {
+  const window = new JSDOM('<main><p id="near">Near public paragraph.</p><p id="far">Far public paragraph.</p></main>').window;
+  const near = window.document.querySelector('#near')!, far = window.document.querySelector('#far')!;
+  const original = window.document.querySelector('main')!.innerHTML;
+  far.getBoundingClientRect = () => new window.DOMRect(0, 5000, 300, 20);
+  let intersect!: (entries: Array<{ target: Element; isIntersecting: boolean }>) => void;
+  Object.assign(window, { IntersectionObserver: class {
+    constructor(callback: typeof intersect) { intersect = callback; }
+    observe() {} unobserve() {} disconnect() {}
+  } });
+  const engine = new PageTranslator(window.document);
+  const calls: Array<Array<{ id: string; text: string }>> = [];
+  let finish!: (reply: TranslationReply) => void;
+  engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: segments => {
+    calls.push(segments); return new Promise(resolve => { finish = resolve; });
+  } });
+  await waitFor(() => calls.length === 1);
+  assert.equal(calls[0]!.length, 1);
+  assert.equal(engine.status().state, 'translating');
+  finish({ results: calls[0]!, errors: [] });
+  await waitFor(() => engine.status().state === 'waiting');
+  assert.deepEqual(engine.status(), { state: 'waiting', total: 2, translated: 1, failed: 0, pending: 1 });
+  assert.equal(window.document.querySelector('[data-oit-pending="true"]'), null);
+  await sleep(80); assert.equal(calls.length, 1);
+  intersect([{ target: near, isIntersecting: false }, { target: far, isIntersecting: true }]);
+  assert.equal(engine.status().state, 'translating');
+  await waitFor(() => calls.length === 2);
+  assert.equal(calls[1]!.length, 1);
+  finish({ results: calls[1]!, errors: [] });
+  await waitFor(() => engine.status().state === 'ready');
+  assert.deepEqual(engine.status(), { state: 'ready', total: 2, translated: 2, failed: 0, pending: 0 });
+  engine.restore();
+  assert.equal(window.document.querySelector('main')!.innerHTML, original);
+  window.close();
+});
+
+test('Restore while waiting prevents a stale visibility callback from resuming translation', async () => {
+  const window = new JSDOM('<p>Deferred public paragraph.</p>').window;
+  const paragraph = window.document.querySelector('p')!;
+  paragraph.getBoundingClientRect = () => new window.DOMRect(0, 5000, 300, 20);
+  let intersect!: (entries: Array<{ target: Element; isIntersecting: boolean }>) => void;
+  Object.assign(window, { IntersectionObserver: class {
+    constructor(callback: typeof intersect) { intersect = callback; }
+    observe() {} unobserve() {} disconnect() {}
+  } });
+  let calls = 0;
+  const engine = new PageTranslator(window.document);
+  engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: async segments => { calls++; return { results: segments, errors: [] }; } });
+  await waitFor(() => engine.status().state === 'waiting');
+  assert.equal(engine.status().pending, 1);
+  engine.restore(); intersect([{ target: paragraph, isIntersecting: true }]);
+  await sleep(80);
+  assert.equal(calls, 0);
+  assert.deepEqual(engine.status(), { state: 'idle', total: 0, translated: 0, failed: 0, pending: 0 });
+  assert.equal(window.document.querySelector('[data-oit-owned]'), null);
+  window.close();
+});
+
 test('bilingual mode preserves original node identity/listeners and restores completely', async () => {
   const window = new JSDOM('<p>Read <a href="/article">the article</a> now.</p>', { url: 'https://example.com' }).window;
   const document = window.document;

@@ -68,7 +68,9 @@ async function status(tabId: number): Promise<PageStatus> {
   const values = fresh.filter((value): value is PromiseFulfilledResult<PageStatus> => value.status === 'fulfilled' && !!value.value?.state).map(value => value.value);
   if (!values.length) return { state: 'idle', total: 0, translated: 0, failed: 0, pending: 0 };
   return values.reduce((combined, value) => ({
-    state: combined.state === 'translating' || value.state === 'translating' ? 'translating' : value.state === 'ready' || combined.state === 'ready' ? 'ready' : 'idle',
+    state: combined.state === 'translating' || value.state === 'translating' ? 'translating'
+      : combined.state === 'waiting' || value.state === 'waiting' ? 'waiting'
+      : value.state === 'ready' || combined.state === 'ready' ? 'ready' : 'idle',
     total: combined.total + value.total, translated: combined.translated + value.translated,
     failed: combined.failed + value.failed, pending: combined.pending + value.pending,
     ...(combined.error || value.error ? { error: combined.error || value.error } : {}),
