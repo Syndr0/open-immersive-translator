@@ -8,7 +8,7 @@ interface PopupFixtureState {
   messages: string[];
   optionsOpened: number;
   failAction?: string;
-  pageStatus?: { state: 'waiting' | 'translating' | 'ready'; total: number; translated: number; failed: number; pending: number };
+  pageStatus?: { state: 'waiting' | 'translating' | 'ready'; total: number; translated: number; failed: number; pending: number; skipped?: number };
 }
 
 async function openPopupFixture(page: Page, health: PopupHealth): Promise<void> {
@@ -97,6 +97,9 @@ test('popup tells deferred content apart from requests still running', async ({ 
   await page.evaluate(() => { (window as unknown as { popupFixture: PopupFixtureState }).popupFixture.pageStatus = { state: 'ready', total: 2, translated: 2, failed: 0, pending: 0 }; });
   await page.clock.runFor(1200);
   await expect(page.locator('#status')).toHaveText('2 of 2 paragraphs translated');
+  await page.evaluate(() => { (window as unknown as { popupFixture: PopupFixtureState }).popupFixture.pageStatus = { state: 'ready', total: 2, translated: 0, skipped: 2, failed: 0, pending: 0 }; });
+  await page.clock.runFor(1200);
+  await expect(page.locator('#status')).toHaveText('0 of 2 paragraphs translated · 2 unchanged');
 });
 
 test('built popup requires both successful health and a configured provider', async ({ page }) => {

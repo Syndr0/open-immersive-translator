@@ -5,7 +5,7 @@ export interface TranslationReply {
   results: Array<{ id: string; text: string }>;
   errors: Array<{ id: string; message: string }>;
 }
-export interface PageStatus { state: 'idle' | 'translating' | 'waiting' | 'ready'; total: number; translated: number; failed: number; pending: number; error?: string }
+export interface PageStatus { state: 'idle' | 'translating' | 'waiting' | 'ready'; total: number; translated: number; failed: number; pending: number; skipped?: number; error?: string }
 export interface EngineOptions {
   targetLanguage: string;
   theme: 'subtle' | 'accent';
@@ -16,7 +16,7 @@ interface Paragraph {
   id: string;
   host: Element;
   source: Serialization;
-  status: 'queued' | 'pending' | 'translated' | 'failed';
+  status: 'queued' | 'pending' | 'translated' | 'skipped' | 'failed';
   visible: boolean;
   wrapper?: Element;
   error?: string;
@@ -116,10 +116,11 @@ export class PageTranslator {
     const values = [...this.records.values()];
     const translated = values.filter(record => record.status === 'translated').length;
     const failed = values.filter(record => record.status === 'failed').length;
-    const pending = values.length - translated - failed;
+    const skipped = values.filter(record => record.status === 'skipped').length;
+    const pending = values.length - translated - failed - skipped;
     const error = this.pausedError || values.find(record => record.status === 'failed')?.error;
     const active = this.busy || this.scans.size > 0 || values.some(record => record.status === 'pending' || (record.status === 'queued' && record.visible));
-    return { state: !this.enabled ? 'idle' : active ? 'translating' : pending ? 'waiting' : 'ready', total: values.length, translated, failed, pending, ...(error ? { error } : {}) };
+    return { state: !this.enabled ? 'idle' : active ? 'translating' : pending ? 'waiting' : 'ready', total: values.length, translated, failed, pending, ...(skipped ? { skipped } : {}), ...(error ? { error } : {}) };
   }
 
   private removeDetached(): void {
@@ -256,6 +257,10 @@ export class PageTranslator {
       if (!value && !error && !final) continue;
       try {
         if (!value) throw new Error(error?.message ?? 'The server returned no translation.');
+        if (value.text.replace(/\s+/g, ' ').trim() === record.source.text.replace(/\s+/g, ' ').trim()) {
+          record.wrapper?.remove(); record.wrapper = undefined; record.status = 'skipped';
+          continue;
+        }
         const fragment = renderTranslation(record.source, value.text, this.document);
         const wrapper = this.wrapper(record);
         wrapper.replaceChildren(fragment); record.status = 'translated';

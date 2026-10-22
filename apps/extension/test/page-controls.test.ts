@@ -10,6 +10,18 @@ const idle: PageStatus = { state: 'idle', total: 0, translated: 0, failed: 0, pe
 const selector = '[data-oit-owned="launcher"][data-oit-launcher]';
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 
+test('unchanged paragraphs finish without claiming a translation or leaving a spinner', () => {
+  const window = new JSDOM('<p>Original source.</p>').window;
+  const controls = createPageControls(window.document, { start: () => {}, restore: () => {} });
+  const root = window.document.querySelector(selector)!.shadowRoot!;
+  controls.update({ state: 'ready', total: 2, translated: 0, skipped: 2, failed: 0, pending: 0 });
+  assert.equal(root.querySelector('.label')?.textContent, 'Unchanged');
+  assert.equal(root.querySelector('[role="status"]')?.textContent, '0 of 2 paragraphs translated · 2 unchanged');
+  assert.equal(root.querySelector('[data-role="progress"]')?.textContent, '2/2');
+  assert.equal(root.querySelector('.rail')?.classList.contains('working'), false);
+  controls.remove(); window.close();
+});
+
 test('deferred content shows Ready without a spinner and active work resumes before final completion', () => {
   const window = new JSDOM('<p>Public source.</p>').window;
   const controls = createPageControls(window.document, { start: () => {}, restore: () => {} });

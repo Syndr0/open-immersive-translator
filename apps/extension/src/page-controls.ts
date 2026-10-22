@@ -109,7 +109,7 @@ export function createPageControls(document: Document, actions: PageControlActio
     if (restoring) return 'Restoring the original page…';
     if (starting) return 'Starting translation…';
     if (value.state === 'idle') return 'Translate this page with your configured translation service.';
-    const counts = `${value.translated} of ${value.total} paragraphs translated${value.failed ? ` · ${value.failed} unavailable` : ''}${value.pending ? ` · ${value.pending} remaining` : ''}`;
+    const counts = `${value.translated} of ${value.total} paragraphs translated${value.skipped ? ` · ${value.skipped} unchanged` : ''}${value.failed ? ` · ${value.failed} unavailable` : ''}${value.pending ? ` · ${value.pending} remaining` : ''}`;
     if (value.state === 'waiting') return value.failed
       ? `${counts}. ${value.error || 'Some paragraphs could not be translated.'} Choose Retry to try again, or scroll to translate more.`
       : `${counts}. Scroll to translate more.`;
@@ -127,8 +127,8 @@ export function createPageControls(document: Document, actions: PageControlActio
     translate.disabled = working || restoring;
     translate.setAttribute('aria-label', retry ? 'Retry page translation' : hasTranslation ? value.state === 'translating' ? 'Translation in progress' : 'Translate this page again' : 'Translate this page');
     translate.setAttribute('aria-busy', String(working));
-    label.textContent = restoring ? 'Restoring' : starting ? 'Starting' : value.state === 'translating' ? 'Translating' : retry ? 'Retry' : value.state === 'waiting' ? 'Ready' : hasTranslation ? 'Translated' : 'Translate';
-    progress.textContent = `${value.translated}/${value.total}`;
+    label.textContent = restoring ? 'Restoring' : starting ? 'Starting' : value.state === 'translating' ? 'Translating' : retry ? 'Retry' : value.state === 'waiting' ? 'Ready' : value.skipped && !value.translated ? 'Unchanged' : hasTranslation ? 'Translated' : 'Translate';
+    progress.textContent = `${value.translated + (value.skipped || 0)}/${value.total}`;
     progress.hidden = !hasTranslation || starting || restoring;
     restore.hidden = !hasTranslation && !restoring;
     restore.disabled = restoring;

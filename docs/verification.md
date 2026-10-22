@@ -1,5 +1,12 @@
 # Verification
 
+## Same-language filtering and unchanged output — 2026-10-21
+
+- Added bounded paragraph-level Chrome CLD detection before website translation jobs. Confident target-language paragraphs are retained locally; explicit matching source/target settings also avoid provider submission. Uncertain/mixed-language results, missing detection and timeouts keep translation enabled. Simplified/Traditional Chinese are not conflated; the real Chrome detector reported generic `zh` for both script samples, so ambiguous cases remain eligible for conversion.
+- The website renderer now suppresses identical/whitespace-equivalent results without adding duplicate wrappers. These paragraphs have a separate unchanged count, contribute to completion progress, and do not claim a new translation. Popup/frame aggregation and Restore preserve that state.
+- TypeScript, production builds, **216 unit/integration tests** and **24 browser tests** passed. In the actual unpacked MV3 extension, a long English paragraph targeting English made zero translation-job submissions; a later Chinese paragraph on the same `lang="en"` page was submitted and rendered through the labeled test provider. Restore retained exact source HTML. This ran in an isolated Chromium profile, not the user's Chrome session.
+- Two public Chinese samples (plain prose and protected inline identities) returned unchanged from the real configured Google backend, with zero errors. The new renderer suppresses these duplicate outputs. These small checks do not establish perfect automatic language identification for every paragraph. Rebuild/reload the unpacked extension and refresh existing website tabs to apply the website fix.
+
 ## Deferred-page status — 2026-10-21
 
 - Fixed the page control's endless spinner when nearby paragraphs were finished but offscreen paragraphs remained queued. The engine now distinguishes active translation, waiting for scrolling and full completion. The control shows Ready with a scroll hint while waiting; the popup and combined frame status preserve the same distinction. Deferred paragraphs still translate automatically when they approach the viewport.

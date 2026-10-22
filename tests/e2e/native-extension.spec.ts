@@ -101,6 +101,34 @@ test('native MV3 launcher recovers offline, handles root mutations and waits cor
     await expect(launcher.locator('.label')).toHaveText('Translated');
     await launcher.getByRole('button', { name: 'Restore original page' }).click();
     expect(await page.locator('main').innerHTML()).toBe(waitingOriginal);
+
+    await worker.evaluate(async () => {
+      const { settings } = await chrome.storage.local.get('settings');
+      await chrome.storage.local.set({ settings: { ...(settings as Record<string, unknown>), sourceLanguage: 'auto', targetLanguage: 'en' } });
+    });
+    const english = 'Open scientific research gives every reader an opportunity to understand discoveries, compare evidence and learn from other people. This paragraph is already written in English and should stay exactly where it is, without sending it to a translation provider or inserting a second copy of its text.';
+    await page.route('https://example.org/native-language-filter', route => route.fulfill({ contentType: 'text/html', body: `<!doctype html><html lang="en"><body><main><p id="already-english">${english}</p></main></body></html>` }));
+    await page.goto('https://example.org/native-language-filter');
+    const inputCount = inputs.length;
+    await launcher.getByRole('button', { name: 'Translate this page', exact: true }).click();
+    await expect(launcher.getByRole('status')).toHaveText('0 of 1 paragraphs translated · 1 unchanged');
+    await expect(launcher.locator('.label')).toHaveText('Unchanged');
+    await expect(page.locator('[data-oit-owned="translation"]')).toHaveCount(0);
+    expect(inputs.length).toBe(inputCount);
+    await expect(page.locator('#already-english')).toHaveText(english);
+    // An English page hint must not hide a later foreign-language paragraph.
+    const mixedOriginal = await page.evaluate(() => {
+      const paragraph = document.createElement('p'); paragraph.id = 'foreign-native';
+      paragraph.textContent = '这是一段中文说明，介绍科学研究如何帮助不同地区的人们交流知识、分享发现并学习新的研究方法。虽然网页的语言标记是英文，但这段实际内容仍然需要翻译成英文，不能因为网页标记而被忽略。';
+      document.querySelector('main')!.append(paragraph);
+      return document.querySelector('main')!.innerHTML;
+    });
+    await expect(page.locator('#foreign-native + [data-oit-owned="translation"]')).toContainText('[Demo');
+    await expect(launcher.getByRole('status')).toHaveText('1 of 2 paragraphs translated · 1 unchanged');
+    expect(inputs.length).toBe(inputCount + 1);
+    expect(inputs.at(-1)!.text).not.toContain(english);
+    await launcher.getByRole('button', { name: 'Restore original page' }).click();
+    expect(await page.locator('main').innerHTML()).toBe(mixedOriginal);
     expect(errors).toEqual([]);
   } finally {
     await testInfo.attach('native-extension-diagnostics', { body: JSON.stringify({ extensionPath, workerUrl, errors, modelInputCount: inputs.length }, null, 2), contentType: 'application/json' });

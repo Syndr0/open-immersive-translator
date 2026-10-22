@@ -2,6 +2,7 @@ import { PageTranslator, type PageStatus } from './engine';
 import type { Settings } from './settings';
 import { translateThroughJobs } from './transport';
 import { createPageControls, type PageControls } from './page-controls';
+import { translateNeeded } from './language';
 
 declare global { var __oitContentInstalled: boolean | undefined; }
 
@@ -17,11 +18,12 @@ if (!globalThis.__oitContentInstalled) {
     if (message.type === 'oit:start') {
       const settings = message.settings as Settings;
       engine.start({ targetLanguage: settings.targetLanguage, theme: settings.theme, onStatus: report,
-        translate: (segments, signal, onProgress) => translateThroughJobs({ segments, targetLanguage: settings.targetLanguage, sourceLanguage: settings.sourceLanguage }, signal, async message => {
+        translate: (segments, signal, onProgress) => translateNeeded({ segments, targetLanguage: settings.targetLanguage, sourceLanguage: settings.sourceLanguage }, signal,
+          (input, signal, progress) => translateThroughJobs(input, signal, async message => {
           const reply = await chrome.runtime.sendMessage(message);
           if (reply?.error) throw new Error(reply.error);
           return reply;
-        }, 500, onProgress),
+        }, 500, progress), onProgress),
       });
       controls?.update(engine.status());
       respond({ ok: true });

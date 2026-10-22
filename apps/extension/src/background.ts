@@ -73,6 +73,7 @@ async function status(tabId: number): Promise<PageStatus> {
       : value.state === 'ready' || combined.state === 'ready' ? 'ready' : 'idle',
     total: combined.total + value.total, translated: combined.translated + value.translated,
     failed: combined.failed + value.failed, pending: combined.pending + value.pending,
+    ...(combined.skipped || value.skipped ? { skipped: (combined.skipped || 0) + (value.skipped || 0) } : {}),
     ...(combined.error || value.error ? { error: combined.error || value.error } : {}),
   }), { state: 'idle', total: 0, translated: 0, failed: 0, pending: 0 } as PageStatus);
 }

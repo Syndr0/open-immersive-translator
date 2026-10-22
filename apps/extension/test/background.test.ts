@@ -51,6 +51,8 @@ test('combined frame status distinguishes waiting from active translation and co
   worker.frameStates.set(0, { state: 'ready', total: 2, translated: 2, failed: 0, pending: 0 });
   worker.frameStates.set(3, { state: 'ready', total: 1, translated: 1, failed: 0, pending: 0 });
   assert.deepEqual(plain(await worker.send({ type: 'oit:tab-status', tabId: 12 }, {})), { state: 'ready', total: 3, translated: 3, failed: 0, pending: 0 });
+  worker.frameStates.set(0, { state: 'ready', total: 2, translated: 1, skipped: 1, failed: 0, pending: 0 });
+  assert.deepEqual(plain(await worker.send({ type: 'oit:tab-status', tabId: 12 }, {})), { state: 'ready', total: 3, translated: 2, skipped: 1, failed: 0, pending: 0 });
 });
 
 test('manifest passively installs the top-frame launcher and CSS on HTTP(S) websites', async () => {

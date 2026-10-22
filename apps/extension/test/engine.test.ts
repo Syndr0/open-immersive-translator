@@ -11,6 +11,21 @@ async function waitFor(check: () => boolean, timeout = 2000): Promise<void> {
   }
 }
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+const fixtureResults = (segments: Array<{ id: string; text: string }>) => segments.map(segment => ({ ...segment, text: `Fixture: ${segment.text}` }));
+
+test('unchanged target text is not inserted twice and is counted separately', async () => {
+  const window = new JSDOM('<main><p id="same">Keep <a href="/source">this source</a> and <code>x = 1</code> unchanged.</p><p id="other">Foreign source.</p></main>').window;
+  const original = window.document.querySelector('#same')!;
+  const html = original.outerHTML;
+  const engine = new PageTranslator(window.document);
+  engine.start({ targetLanguage: 'en', theme: 'subtle', translate: async segments => ({ results: segments.map(segment => ({ ...segment, text: segment.text.startsWith('Keep') ? segment.text : 'Translated foreign text.' })), errors: [] }) });
+  await waitFor(() => engine.status().state === 'ready');
+  assert.deepEqual(engine.status(), { state: 'ready', total: 2, translated: 1, skipped: 1, failed: 0, pending: 0 });
+  assert.equal(original.outerHTML, html);
+  assert.equal(original.nextElementSibling?.id, 'other');
+  assert.equal(window.document.querySelectorAll('[data-oit-owned="translation"]').length, 1);
+  engine.restore(); assert.equal(engine.status().skipped, undefined); window.close();
+});
 
 test('offscreen queued paragraphs wait without active translation and resume on intersection', async () => {
   const window = new JSDOM('<main><p id="near">Near public paragraph.</p><p id="far">Far public paragraph.</p></main>').window;
@@ -31,7 +46,7 @@ test('offscreen queued paragraphs wait without active translation and resume on 
   await waitFor(() => calls.length === 1);
   assert.equal(calls[0]!.length, 1);
   assert.equal(engine.status().state, 'translating');
-  finish({ results: calls[0]!, errors: [] });
+  finish({ results: fixtureResults(calls[0]!), errors: [] });
   await waitFor(() => engine.status().state === 'waiting');
   assert.deepEqual(engine.status(), { state: 'waiting', total: 2, translated: 1, failed: 0, pending: 1 });
   assert.equal(window.document.querySelector('[data-oit-pending="true"]'), null);
@@ -40,7 +55,7 @@ test('offscreen queued paragraphs wait without active translation and resume on 
   assert.equal(engine.status().state, 'translating');
   await waitFor(() => calls.length === 2);
   assert.equal(calls[1]!.length, 1);
-  finish({ results: calls[1]!, errors: [] });
+  finish({ results: fixtureResults(calls[1]!), errors: [] });
   await waitFor(() => engine.status().state === 'ready');
   assert.deepEqual(engine.status(), { state: 'ready', total: 2, translated: 2, failed: 0, pending: 0 });
   engine.restore();
@@ -59,7 +74,7 @@ test('Restore while waiting prevents a stale visibility callback from resuming t
   } });
   let calls = 0;
   const engine = new PageTranslator(window.document);
-  engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: async segments => { calls++; return { results: segments, errors: [] }; } });
+  engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: async segments => { calls++; return { results: fixtureResults(segments), errors: [] }; } });
   await waitFor(() => engine.status().state === 'waiting');
   assert.equal(engine.status().pending, 1);
   engine.restore(); intersect([{ target: paragraph, isIntersecting: true }]);
@@ -160,7 +175,7 @@ test('protected inline source changes refresh local clones even when provider te
   const requests: string[] = [];
   engine.start({ targetLanguage: 'de', theme: 'subtle', translate: async segments => {
     requests.push(...segments.map(segment => segment.text));
-    return { results: segments.map(segment => ({ id: segment.id, text: segment.text })), errors: [] };
+    return { results: fixtureResults(segments), errors: [] };
   } });
   await waitFor(() => engine.status().translated === 1);
   window.document.querySelector('p code')!.textContent = 'x=2';
@@ -245,7 +260,7 @@ test('visible reading content is requested before a long navigation menu', async
   const calls: string[][] = [];
   engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: async segments => {
     calls.push(segments.map(segment => segment.text));
-    return { results: segments, errors: [] };
+    return { results: fixtureResults(segments), errors: [] };
   } });
   await waitFor(() => engine.status().state === 'ready');
   assert.equal(calls[0]![0], 'Paper title');
@@ -258,7 +273,7 @@ test('large page discovery yields and Restore cancels scheduled scan work', asyn
   const engine = new PageTranslator(window.document);
   let calls = 0;
   engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: async segments => {
-    calls++; return { results: segments, errors: [] };
+    calls++; return { results: fixtureResults(segments), errors: [] };
   } });
   assert.ok(engine.status().total < 200, 'discovery must yield before serializing the entire page');
   engine.restore();
@@ -310,7 +325,7 @@ test('a reading batch can translate more than eight paragraphs together', async 
   const batches: number[] = [];
   engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: async segments => {
     batches.push(segments.length);
-    return { results: segments, errors: [] };
+    return { results: fixtureResults(segments), errors: [] };
   } });
   await waitFor(() => engine.status().translated === 20);
   assert.ok(batches.some(count => count > 8), 'reading batches should no longer stop after eight paragraphs');
@@ -378,7 +393,7 @@ test('a dead backend pauses the page without repeated errors or queued network w
   assert.equal(document.querySelector('[data-oit-owned]'), null);
   // An older content-script version may have left owned failure wrappers behind.
   const legacy = document.createElement('div'); legacy.setAttribute('data-oit-owned', 'translation'); legacy.className = 'oit-error'; legacy.textContent = 'Translation unavailable'; document.body.append(legacy);
-  engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: async segments => ({ results: segments, errors: [] }) });
+  engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: async segments => ({ results: fixtureResults(segments), errors: [] }) });
   await waitFor(() => engine.status().translated === 151 && engine.status().state === 'ready', 5000);
   assert.deepEqual(engine.status(), { state: 'ready', total: 151, translated: 151, failed: 0, pending: 0 });
   assert.equal(document.querySelector('.oit-error'), null);
@@ -422,7 +437,7 @@ test('a late fatal error after Restore cannot recreate errors, overlays or faile
   await sleep(60);
   assert.deepEqual(engine.status(), { state: 'idle', total: 0, translated: 0, failed: 0, pending: 0 });
   assert.equal(window.document.body.innerHTML, original);
-  engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: async segments => ({ results: segments, errors: [] }) });
+  engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: async segments => ({ results: fixtureResults(segments), errors: [] }) });
   await waitFor(() => engine.status().translated === 1);
   assert.equal(engine.status().failed, 0); assert.equal(engine.status().error, undefined);
   engine.restore(); window.close();
