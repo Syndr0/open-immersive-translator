@@ -7,21 +7,22 @@ const provider = () => providerFromEnv({ TRANSLATION_PROVIDER: 'google-free' });
 const signal = () => new AbortController().signal;
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
 
-test('free Google batches repeated q at a fixed endpoint without credentials or HTML decoding', async context => {
+test('free Google batches escaped HTML paragraphs at the no-key gtx endpoint and decodes text once', async context => {
   const requests: { url: URL; headers: Headers; method?: string; queries: string[] }[] = [];
   context.mock.method(globalThis, 'fetch', async (url: string | URL | Request, init?: RequestInit) => {
     requests.push({ url: new URL(String(url)), method: init?.method, headers: new Headers(init?.headers), queries: new URLSearchParams(String(init?.body)).getAll('q') });
-    return json(['Bonjour ⟪OIT_0⟫ &amp; text', '<em>literal text</em>']);
+    assert.equal(init?.credentials, 'omit');
+    return json(['Bonjour <code translate="no">⟪OIT_0⟫</code> &amp;amp; text', '&lt;em&gt;literal text&lt;/em&gt;']);
   });
   const free = provider();
   assert.equal(free.kind, 'google-free'); assert.equal(free.model, 'web-unofficial'); assert.equal(free.configured, true);
   assert.deepEqual(free.batch, { maxSegments: 32, maxCharacters: 12000 });
   assert.deepEqual(await free.translate([{ id: 'a', text: 'Hello ⟪OIT_0⟫ &amp; text' }, { id: 'b', text: 'Second' }], 'en', 'fr', signal()), [{ id: 'a', text: 'Bonjour ⟪OIT_0⟫ &amp; text' }, { id: 'b', text: '<em>literal text</em>' }]);
   assert.equal(requests.length, 1);
-  assert.equal(requests[0]!.url.origin + requests[0]!.url.pathname, 'https://clients5.google.com/translate_a/t');
-  assert.deepEqual([...requests[0]!.url.searchParams], [['client', 'dict-chrome-ex'], ['sl', 'en'], ['tl', 'fr']]);
+  assert.equal(requests[0]!.url.origin + requests[0]!.url.pathname, 'https://translate.googleapis.com/translate_a/t');
+  assert.deepEqual([...requests[0]!.url.searchParams], [['client', 'gtx'], ['dt', 't'], ['sl', 'en'], ['tl', 'fr'], ['format', 'html']]);
   assert.equal(requests[0]!.method, 'POST');
-  assert.deepEqual(requests[0]!.queries, ['Hello ⟪OIT_0⟫ &amp; text', 'Second']);
+  assert.deepEqual(requests[0]!.queries, ['Hello <code translate="no">⟪OIT_0⟫</code> &amp;amp; text', 'Second']);
   assert.deepEqual([...requests[0]!.headers], [['accept-encoding', 'identity'], ['content-type', 'application/x-www-form-urlencoded;charset=UTF-8']]);
 });
 
@@ -84,7 +85,7 @@ for (const [name, translated] of [
     });
     const result = await provider().translate([{ id: 'title', text: 'A valid title' }, { id: 'a', text: 'Keep ⟪OIT_0⟫' }], 'auto', 'fr', signal());
     assert.deepEqual(result, [{ id: 'title', text: 'Un titre correct' }, { id: 'a', text: 'Conserver ⟪OIT_0⟫' }]);
-    assert.deepEqual(batches, [['A valid title', 'Keep ⟪OIT_0⟫'], ['Keep']]);
+    assert.deepEqual(batches, [['A valid title', 'Keep <code translate="no">⟪OIT_0⟫</code>'], ['Keep']]);
   });
 }
 
@@ -143,7 +144,51 @@ test('recovery retains exact inline identities, punctuation and whitespace while
   const source = 'Read ⟪OIT_0⟫this research⟪OIT_1⟫,\n keep ⟪OIT_2⟫.';
   const result = await provider().translate([{ id: 'paragraph', text: source }], 'en', 'fr', signal());
   assert.deepEqual(result, [{ id: 'paragraph', text: 'Lire ⟪OIT_0⟫cette recherche⟪OIT_1⟫,\n garder ⟪OIT_2⟫.' }]);
-  assert.deepEqual(batches, [[source], ['Read', 'this research', ',\n keep']]);
+  assert.equal(batches[0]!.length, 1);
+  assert.ok(batches[0]![0]!.includes('<code translate="no">⟪OIT_0⟫</code>'));
+  assert.deepEqual(batches.slice(1), [['Read', 'this research', ',\n keep']]);
+});
+
+test('HTML mode preserves a complete inline paragraph with no fragment-recovery request', async context => {
+  const fetch = context.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
+    assert.deepEqual(new URLSearchParams(String(init?.body)).getAll('q'), [
+      'Read <code translate="no">⟪OIT_0⟫</code>this research<code translate="no">⟪OIT_1⟫</code> &amp; keep <code translate="no">⟪OIT_2⟫</code>.',
+    ]);
+    return json(['Lire <code translate="no">⟪OIT_0⟫</code>cette recherche<code translate="no">⟪OIT_1⟫</code> &amp; conserver <code translate="no">⟪OIT_2⟫</code>.']);
+  });
+  const result = await provider().translate([{ id: 'paragraph', text: 'Read ⟪OIT_0⟫this research⟪OIT_1⟫ & keep ⟪OIT_2⟫.' }], 'en', 'fr', signal());
+  assert.deepEqual(result, [{ id: 'paragraph', text: 'Lire ⟪OIT_0⟫cette recherche⟪OIT_1⟫ & conserver ⟪OIT_2⟫.' }]);
+  assert.equal(fetch.mock.callCount(), 1);
+});
+
+test('literal source markup stays text and cannot be mistaken for a protected envelope', async context => {
+  context.mock.method(globalThis, 'fetch', async (_url: unknown, init?: RequestInit) => {
+    const [text] = new URLSearchParams(String(init?.body)).getAll('q');
+    assert.equal(text, '&lt;code translate="no"&gt;example&lt;/code&gt; &amp;lt;reader&amp;gt; &lt;script&gt;literal&lt;/script&gt;');
+    return json([text]);
+  });
+  const source = '<code translate="no">example</code> &lt;reader&gt; <script>literal</script>';
+  assert.deepEqual(await provider().translate([{ id: 'literal', text: source }], 'en', 'fr', signal()), [{ id: 'literal', text: source }]);
+});
+
+test('unexpected provider HTML fails only its paragraph and never escapes as a successful translation', async context => {
+  let calls = 0;
+  context.mock.method(globalThis, 'fetch', async () => json(++calls === 1
+    ? ['Titre valide', '<code translate="no" onclick="bad()">⟪OIT_0⟫</code>']
+    : ['<img src=x onerror=bad()>']));
+  const result = await provider().translate([{ id: 'good', text: 'A title' }, { id: 'bad', text: 'Keep ⟪OIT_0⟫' }], 'en', 'fr', signal());
+  assert.deepEqual(result[0], { id: 'good', text: 'Titre valide' });
+  assert.ok('error' in result[1]!);
+  assert.equal(calls, 2);
+});
+
+test('entity-only blank translations cannot succeed or displace valid peer results', async context => {
+  let calls = 0;
+  context.mock.method(globalThis, 'fetch', async () => json(++calls === 1 ? ['Titre valide', '&#32;&nbsp;'] : ['&#x20;']));
+  const result = await provider().translate([{ id: 'good', text: 'A title' }, { id: 'bad', text: 'A paragraph' }], 'en', 'fr', signal());
+  assert.deepEqual(result[0], { id: 'good', text: 'Titre valide' });
+  assert.ok('error' in result[1]!);
+  assert.equal(calls, 2);
 });
 
 test('recovery rate limits affect only the failed paragraph and successful peers remain cached', async context => {

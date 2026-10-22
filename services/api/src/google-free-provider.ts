@@ -1,11 +1,30 @@
 import type { Provider, ProviderResult, Segment } from '@oit/core';
+import { decodeHTMLStrict } from 'entities';
 
 // This is an undocumented public web endpoint, not Google Cloud Translation.
 // Its availability and quotas are not guaranteed. No keys, cookies or tokens are used.
-const ENDPOINT = 'https://clients5.google.com/translate_a/t';
+const ENDPOINT = 'https://translate.googleapis.com/translate_a/t';
 const MAX_SEGMENTS = 32;
 const MAX_CHARACTERS = 12_000;
 const MARKER = /⟪OIT_\d+⟫/g;
+
+function toTranslationHtml(text: string): string {
+  // Source markup is text. Only our protected-token envelopes become wire tags.
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(MARKER, marker => `<code translate="no">${marker}</code>`);
+}
+
+function fromTranslationHtml(html: string): string | null {
+  const text = html.replace(/<code\s+translate\s*=\s*(?:"no"|'no'|no)\s*>([^<>]*)<\/code\s*>/gi, (tag, content: string) => {
+    const marker = decodeHTMLStrict(content).trim();
+    return /^⟪OIT_\d+⟫$/.test(marker) ? marker : tag;
+  });
+  // Reject unexpected tags before decoding source literals. Returned HTML never
+  // reaches a renderer: only plain text and our original token grammar escape.
+  if (/[<>]/.test(text)) return null;
+  const decoded = decodeHTMLStrict(text);
+  return decoded.trim() ? decoded : null;
+}
 
 class FreeEndpointError extends Error {
   constructor(message: string, readonly retryable = false, readonly status?: number) { super(message); }
@@ -35,17 +54,17 @@ function retryDelay(signal: AbortSignal): Promise<void> {
 }
 
 /** Shape/count validation is atomic; marker validation is isolated per segment below. */
-async function requestTranslations(texts: string[], source: string, target: string, signal: AbortSignal): Promise<string[]> {
+async function requestTranslations(texts: string[], source: string, target: string, signal: AbortSignal): Promise<Array<string | null>> {
   const url = new URL(ENDPOINT);
-  url.search = new URLSearchParams({ client: 'dict-chrome-ex', sl: source, tl: target }).toString();
+  url.search = new URLSearchParams({ client: 'gtx', dt: 't', sl: source, tl: target, format: 'html' }).toString();
   const body = new URLSearchParams();
-  for (const text of texts) body.append('q', text);
+  for (const text of texts) body.append('q', toTranslationHtml(text));
   let last = new FreeEndpointError('The unofficial Google free endpoint is unavailable. Try again later.');
   for (let attempt = 0; attempt < 2; attempt++) {
     signal.throwIfAborted();
     try {
       const response = await fetch(url, {
-        method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8', 'Accept-Encoding': 'identity' },
+        method: 'POST', credentials: 'omit', headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8', 'Accept-Encoding': 'identity' },
         body: body.toString(), signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]),
       });
       if (!response.ok) {
@@ -63,8 +82,7 @@ async function requestTranslations(texts: string[], source: string, target: stri
           text = item[0];
         }
         if (typeof text !== 'string' || !text.trim()) throw new FreeEndpointError('The unofficial Google free endpoint returned an invalid translation.');
-        // The observed endpoint returns plain strings: do not HTML-decode them.
-        return text;
+        return fromTranslationHtml(text);
       });
       signal.throwIfAborted();
       return translated;
@@ -85,7 +103,7 @@ interface FallbackPlan { source: string; parts: string[]; error?: string }
 export function googleFreeProvider(): Provider {
   return {
     kind: 'google-free', model: 'web-unofficial', configured: true,
-    cacheNamespace: 'google-free:clients5:dict-chrome-ex:plain:local-marker-fallback:v2',
+    cacheNamespace: 'google-free:googleapis:gtx:html:protected-code:local-marker-fallback:v3',
     batch: { maxSegments: MAX_SEGMENTS, maxCharacters: MAX_CHARACTERS },
     async translate(segments: Segment[], source: string, target: string, signal: AbortSignal): Promise<ProviderResult[]> {
       signal.throwIfAborted();
@@ -104,7 +122,7 @@ export function googleFreeProvider(): Provider {
       const parts: FallbackPart[] = [];
       remote.forEach((segment, index) => {
         const text = translated[index]!;
-        if (markersMatch(segment.text, text)) { outputs[segment.index] = { id: segment.id, text }; return; }
+        if (text !== null && markersMatch(segment.text, text)) { outputs[segment.index] = { id: segment.id, text }; return; }
         // Keep identities local if the public endpoint rewrites even one marker.
         // Whitespace and punctuation-only spans stay exactly as written in source.
         const plan: FallbackPlan = { source: segment.text, parts: segment.text.split(/(⟪OIT_\d+⟫)/g) };
@@ -133,7 +151,7 @@ export function googleFreeProvider(): Provider {
           active.forEach((part, index) => {
             const text = fallback[index]!;
             const plan = plans.get(part.owner)!;
-            if (/⟪OIT_/.test(text)) { plan.error = 'The unofficial Google free endpoint inserted a protected token into plain-text recovery.'; return; }
+            if (text === null || /⟪OIT_/.test(text)) { plan.error = 'The unofficial Google free endpoint returned unsafe markup or protected tokens during recovery.'; return; }
             plan.parts[part.index] = part.before + text.trim() + part.after;
           });
         } catch (error) {

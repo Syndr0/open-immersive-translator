@@ -62,7 +62,9 @@ Set this backend value in `.env`, then restart the API:
 TRANSLATION_PROVIDER=google-free
 ```
 
-This opt-in adapter sends text to Google's **unofficial web translation endpoint**. It needs no account, API key, model download or billing setup. It batches up to 32 strings within a conservative 12,000-character request budget, validates the response and preserves protected math, code and links. These are this application's bounds, not a published Google quota. Both documents and the extension use it through the same local backend. If Google changes a protected token, the adapter translates the surrounding prose and restores the identities locally. Valid paragraphs are retained if recovery fails for another paragraph. Translating separate prose fragments can reduce fluency around inline formatting.
+This opt-in adapter uses Google's **unofficial HTML translation web endpoint** (`translate.googleapis.com/translate_a/t`, `client=gtx`, `format=html`). It needs no account, API key, model download or billing setup. It batches up to 32 strings within a conservative 12,000-source-character budget. These are this application's bounds, not a published Google quota. Both documents and the extension use it through the same local backend.
+
+Complete paragraphs travel together: protected identities use small `translate="no"` envelopes, while literal source markup is escaped. The adapter removes only its known envelopes, rejects unexpected tags, decodes text once and validates every protected token before local restoration. Provider HTML is never inserted into the page. A changed token or invalid envelope triggers recovery only for the affected paragraph; valid peers are retained. Fragment recovery can reduce fluency around inline formatting, so it remains a fallback. The HTML method has its own cache namespace so earlier plain-text results are not reused.
 
 This endpoint is undocumented: availability and rate limits can change, and it is not a guaranteed, unlimited free API. Throttling and failures are reported; the app never falls back to Codex or a paid provider. For a supported API, configure Google Cloud below or another provider you control.
 

@@ -1,5 +1,12 @@
 # Verification
 
+## HTML-aware no-key translation — 2026-10-21
+
+- The `google-free` adapter now independently uses the no-key Google HTML protocol found in the original extension's alternate Google path: `translate.googleapis.com/translate_a/t`, `client=gtx`, `format=html`. Source markup is escaped; protected tokens use local HTML envelopes; returned markup is validated and converted to plain text before rendering. Its cache namespace differs from the earlier plain-text adapter. No original bundled key/token or private gateway is used.
+- TypeScript and production builds passed. The final full unit/integration run passed **203 tests**, and all **22 browser tests** passed. Provider cases cover whole inline paragraphs in one request, literal source markup, single entity decoding, unexpected tags, encoded blank results, valid peers, recovery and cancellation.
+- A fresh three-paragraph public comparison completed in 606 ms with the earlier plain-text adapter and 179 ms with the HTML adapter, one request each. Both preserved protected content. This is one sequential observation, not a full-page benchmark or a repeatable speed guarantee.
+- The restarted production backend translated/exported all four blocks of a public Markdown document. The actual unpacked extension in an isolated Chromium profile completed **40/40 public fixture paragraphs**, retained local code, math and link identity, and restored the exact original main HTML. The final website completion check reused results from the initial run; it verifies functionality rather than cold latency. The user's Chrome profile was not modified. Source documents, saved settings and credentials were preserved.
+
 ## Website and free-provider upgrade — 2026-10-21
 
 - `npm run verify` passed: strict TypeScript, **192 unit/integration tests**, and production reader/extension builds. `npm run test:e2e` passed all **19 Chromium browser tests**, including a trusted-click launcher start/Restore test and rejection of synthetic page-script clicks. Most website tests emulate Chrome message transport; one additional regression loads the actual unpacked MV3 extension in a fresh automated Chromium profile, exercises declarative startup, Translate/Restore and document-root mutations. This separate profile does not establish the state of a user’s installed Chrome copy or its permission dialogs.
