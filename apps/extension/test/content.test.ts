@@ -14,6 +14,7 @@ function page(t: TestContext) {
   t.after(() => dom.window.close());
   const messages: Array<{ type: string }> = [], listeners: Listener[] = [];
   const jobs = new Map<string, Array<{ id: string; text: string }>>();
+  let offline = false;
   const dispatch = (message: unknown) => { for (const listener of listeners) listener(message, {}, () => {}); };
   Object.assign(dom.window, { chrome: { runtime: {
     onMessage: { addListener(listener: Listener) { listeners.push(listener); } },
@@ -21,7 +22,7 @@ function page(t: TestContext) {
       messages.push(message);
       if (message.type === 'oit:launcher-start') { dispatch({ type: 'oit:start', settings }); return { ok: true }; }
       if (message.type === 'oit:launcher-restore') { dispatch({ type: 'oit:restore' }); return { ok: true }; }
-      if (message.type === 'oit:translation-start') { const jobId = `fixture-${jobs.size}`; jobs.set(jobId, message.segments!); return { jobId }; }
+      if (message.type === 'oit:translation-start') { if (offline) return { error: 'Cannot reach the local translation service.' }; const jobId = `fixture-${jobs.size}`; jobs.set(jobId, message.segments!); return { jobId }; }
       if (message.type === 'oit:translation-status') {
         const results = jobs.get(message.jobId!)!.map(segment => ({ ...segment, text: `Traduit: ${segment.text}` }));
         return { id: message.jobId, status: 'completed', completed: results.length, total: results.length, result: { results, errors: [] } };
@@ -29,7 +30,7 @@ function page(t: TestContext) {
       return { ok: true };
     },
   } } });
-  return { window: dom.window, document: dom.window.document, messages, listeners, dispatch, install: () => dom.window.eval(bundle) };
+  return { window: dom.window, document: dom.window.document, messages, listeners, dispatch, setOffline: (value: boolean) => { offline = value; }, install: () => dom.window.eval(bundle) };
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
@@ -112,4 +113,26 @@ test('programmatic subframe injection stays passive and leaves the launcher in t
   assert.equal(registrations, 1);
   assert.equal(child.document.querySelector(selector), null);
   assert.equal(requests, 0);
+});
+
+test('mid-job service failure stays in the single launcher and recovery clears stale errors', async t => {
+  const fixture = page(t);
+  const original = fixture.document.querySelector('main')!.innerHTML;
+  fixture.install(); fixture.setOffline(true);
+  fixture.dispatch({ type: 'oit:start', settings });
+  const host = fixture.document.querySelector(selector)!;
+  const root = host.shadowRoot!;
+  await waitFor(() => root.querySelector('[data-action="translate"]')?.getAttribute('aria-label') === 'Retry page translation');
+  assert.equal(fixture.document.querySelector('[data-oit-owned="translation"]'), null);
+  assert.equal(fixture.document.querySelectorAll(selector).length, 1);
+  assert.equal(fixture.document.querySelector('main')!.innerHTML, original);
+  assert.match(root.querySelector('[role="status"]')!.textContent!, /0 of 1.*1 unavailable.*Cannot reach the local translation service/);
+  fixture.setOffline(false); fixture.dispatch({ type: 'oit:start', settings });
+  await waitFor(() => fixture.document.querySelector('[data-oit-owned="translation"]')?.textContent?.startsWith('Traduit:') === true);
+  assert.equal(root.querySelector('[role="status"]')?.textContent, '1 of 1 paragraphs translated');
+  assert.equal(root.querySelector('.rail')?.classList.contains('has-error'), false);
+  assert.equal(fixture.document.querySelector('.oit-error'), null);
+  fixture.dispatch({ type: 'oit:restore' });
+  assert.equal(fixture.document.querySelector('main')!.innerHTML, original);
+  assert.equal(root.querySelector('[data-action="translate"]')?.getAttribute('aria-label'), 'Translate this page');
 });

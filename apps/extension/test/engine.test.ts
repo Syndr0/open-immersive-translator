@@ -85,13 +85,14 @@ test('new dynamic paragraphs translate once and own DOM changes do not loop', as
   engine.restore(); window.close();
 });
 
-test('invalid protected output fails visibly without damaging source', async () => {
+test('invalid protected output reports failure without adding an error overlay or damaging source', async () => {
   const window = new JSDOM('<p>Keep <code>x=1</code> unchanged.</p>').window;
   const engine = new PageTranslator(window.document);
   engine.start({ targetLanguage: 'de', theme: 'subtle', translate: async segments => ({ results: segments.map(segment => ({ id: segment.id, text: 'Dropped the code marker' })), errors: [] }) });
   await waitFor(() => engine.status().failed === 1);
   assert.equal(window.document.querySelector('p')?.textContent, 'Keep x=1 unchanged.');
-  assert.equal(window.document.querySelector('.oit-error')?.textContent, 'Translation unavailable');
+  assert.equal(window.document.querySelector('[data-oit-owned]'), null);
+  assert.match(engine.status().error!, /protected/);
   engine.restore(); window.close();
 });
 
@@ -174,7 +175,9 @@ test('a later batch failure retains already rendered valid paragraphs', async ()
   await waitFor(() => engine.status().failed === 1);
   assert.equal(engine.status().translated, 1);
   assert.equal(window.document.querySelector('[data-oit-owned]')?.textContent, 'Valid completed translation');
-  assert.equal(window.document.querySelectorAll('.oit-error').length, 1);
+  assert.equal(window.document.querySelectorAll('[data-oit-owned="translation"]').length, 1);
+  assert.equal(window.document.querySelector('.oit-error'), null);
+  assert.match(engine.status().error!, /remaining translation failed/);
   engine.restore(); window.close();
 });
 
@@ -296,5 +299,73 @@ test('a pending paragraph moved outside body receives no late translation overla
   await waitFor(() => engine.status().total === 0);
   assert.equal(document.querySelector('[data-oit-owned="translation"]'), null);
   assert.equal(paragraph.textContent, 'Source moved by another extension.');
+  engine.restore(); window.close();
+});
+
+test('a dead backend pauses the page without repeated errors or queued network work and a fresh retry recovers', async () => {
+  const window = new JSDOM(`<main>${Array.from({ length: 150 }, (_, index) => `<p>Reading paragraph ${index} with <code>code()</code>.</p>`).join('')}</main>`).window;
+  const document = window.document;
+  const original = document.querySelector('main')!.innerHTML;
+  const engine = new PageTranslator(document);
+  let calls = 0;
+  engine.start({ targetLanguage: 'fr', theme: 'accent', translate: async () => { calls++; throw new Error('Cannot reach the translation service. Start the local server.'); } });
+  await waitFor(() => engine.status().total === 150 && engine.status().state === 'ready', 5000);
+  assert.deepEqual(engine.status(), { state: 'ready', total: 150, translated: 0, failed: 150, pending: 0, error: 'Cannot reach the translation service. Start the local server.' });
+  assert.equal(calls, 1, 'a fatal service failure must not drain later/offscreen batches');
+  assert.equal(document.querySelector('[data-oit-owned]'), null);
+  assert.equal(document.querySelector('main')!.innerHTML, original);
+  const dynamic = document.createElement('p'); dynamic.textContent = 'New source while the backend is unavailable.'; document.querySelector('main')!.append(dynamic);
+  await waitFor(() => engine.status().total === 151 && engine.status().failed === 151);
+  assert.equal(calls, 1, 'dynamic content must remain source-only until explicit retry');
+  assert.equal(document.querySelector('[data-oit-owned]'), null);
+  // An older content-script version may have left owned failure wrappers behind.
+  const legacy = document.createElement('div'); legacy.setAttribute('data-oit-owned', 'translation'); legacy.className = 'oit-error'; legacy.textContent = 'Translation unavailable'; document.body.append(legacy);
+  engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: async segments => ({ results: segments, errors: [] }) });
+  await waitFor(() => engine.status().translated === 151 && engine.status().state === 'ready', 5000);
+  assert.deepEqual(engine.status(), { state: 'ready', total: 151, translated: 151, failed: 0, pending: 0 });
+  assert.equal(document.querySelector('.oit-error'), null);
+  assert.equal(document.querySelectorAll('[data-oit-owned="translation"]').length, 151);
+  engine.restore();
+  assert.deepEqual(engine.status(), { state: 'idle', total: 0, translated: 0, failed: 0, pending: 0 });
+  assert.equal(document.querySelector('[data-oit-owned]'), null);
+  assert.equal(document.querySelectorAll('p').length, 151);
+  window.close();
+});
+
+test('per-paragraph failures leave valid peers and later dynamic translation available without inline error text', async () => {
+  const window = new JSDOM('<main><p id="good">Available paragraph.</p><p id="bad">Unavailable paragraph.</p></main>').window;
+  const engine = new PageTranslator(window.document);
+  const sources = [...window.document.querySelectorAll('p')].map(element => element.outerHTML);
+  engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: async segments => ({
+    results: segments.filter(segment => !segment.text.startsWith('Unavailable')).map(segment => ({ ...segment, text: `Translated: ${segment.text}` })),
+    errors: segments.filter(segment => segment.text.startsWith('Unavailable')).map(segment => ({ id: segment.id, message: 'Provider rejected this paragraph.' })),
+  }) });
+  await waitFor(() => engine.status().state === 'ready');
+  assert.deepEqual(engine.status(), { state: 'ready', total: 2, translated: 1, failed: 1, pending: 0, error: 'Provider rejected this paragraph.' });
+  assert.equal(window.document.querySelectorAll('[data-oit-owned="translation"]').length, 1);
+  assert.equal(window.document.querySelector('#bad + [data-oit-owned]'), null);
+  assert.deepEqual([...window.document.querySelectorAll('p')].map(element => element.outerHTML), sources);
+  const dynamic = window.document.createElement('p'); dynamic.textContent = 'A later available paragraph.'; window.document.querySelector('main')!.append(dynamic);
+  await waitFor(() => engine.status().translated === 2);
+  assert.equal(engine.status().failed, 1);
+  assert.equal(engine.status().pending, 0);
+  assert.equal(window.document.querySelector('.oit-error'), null);
+  engine.restore(); assert.equal(engine.status().error, undefined); window.close();
+});
+
+test('a late fatal error after Restore cannot recreate errors, overlays or failed counts', async () => {
+  const window = new JSDOM('<p>Original paragraph.</p>').window;
+  const original = window.document.body.innerHTML;
+  const engine = new PageTranslator(window.document);
+  let reject!: (error: Error) => void;
+  engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: () => new Promise((_resolve, fail) => { reject = fail; }) });
+  await waitFor(() => !!reject);
+  engine.restore(); reject(new Error('Late service failure'));
+  await sleep(60);
+  assert.deepEqual(engine.status(), { state: 'idle', total: 0, translated: 0, failed: 0, pending: 0 });
+  assert.equal(window.document.body.innerHTML, original);
+  engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: async segments => ({ results: segments, errors: [] }) });
+  await waitFor(() => engine.status().translated === 1);
+  assert.equal(engine.status().failed, 0); assert.equal(engine.status().error, undefined);
   engine.restore(); window.close();
 });

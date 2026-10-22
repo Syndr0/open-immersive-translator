@@ -8,7 +8,7 @@ import { build } from 'esbuild';
 const bundle = (await build({ entryPoints: [fileURLToPath(new URL('../src/background.ts', import.meta.url))], bundle: true, write: false, platform: 'browser', format: 'iife' })).outputFiles[0]!.text;
 const plain = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
-function background() {
+function background(fetcher: () => Promise<unknown> = async () => ({ ok: true, provider: { configured: true, kind: 'test' } })) {
   let listener!: (message: unknown, sender: unknown, respond: (value: unknown) => void) => boolean;
   const sent: Array<{ tabId: number; message: { type: string; settings?: { backendUrl: string; targetLanguage: string } }; frameId: number }> = [];
   const injections: unknown[] = [], styles: unknown[] = [];
@@ -26,7 +26,11 @@ function background() {
     },
     tabs: { async sendMessage(tabId: number, message: typeof sent[number]['message'], options: { frameId: number }) { sent.push(plain({ tabId, message, frameId: options.frameId })); return { ok: true }; }, onRemoved: { addListener() {} } },
   };
-  runInNewContext(bundle, { chrome, URL, AbortSignal, fetch: async () => { fetches++; throw new Error('Unexpected network access'); } });
+  runInNewContext(bundle, { chrome, URL, AbortSignal, fetch: async () => {
+    fetches++;
+    const body = await fetcher();
+    return { ok: true, json: async () => body };
+  } });
   return { sent, injections, styles, session, fetches: () => fetches,
     send: (message: unknown, sender: unknown) => new Promise<{ error?: string; ok?: boolean; frames?: number }>(resolve => { assert.equal(listener(message, sender, value => resolve(value as never)), true); }),
   };
@@ -41,7 +45,7 @@ test('manifest passively installs the top-frame launcher and CSS on HTTP(S) webs
   assert.equal(manifest.externally_connectable, undefined);
 });
 
-test('launcher uses its sender tab and stored settings without an activeTab injection or network request', async () => {
+test('launcher stays passive until Translate, then checks the service before starting its sender tab', async () => {
   const worker = background();
   assert.equal(worker.fetches(), 0);
   const result = await worker.send({ type: 'oit:launcher-start', tabId: 999, settings: { backendUrl: 'https://untrusted.example', targetLanguage: 'wrong' } }, sender);
@@ -53,7 +57,38 @@ test('launcher uses its sender tab and stored settings without an activeTab inje
   assert.deepEqual(worker.injections, []);
   assert.deepEqual(worker.styles, []);
   assert.deepEqual(worker.session['oit:frames:12'], [0]);
+  assert.equal(worker.fetches(), 1);
+});
+
+test('offline service prevents launcher scans and toolbar injection and permits a later retry', async () => {
+  let online = false;
+  const worker = background(async () => {
+    if (!online) throw new TypeError('Failed to fetch');
+    return { ok: true, provider: { configured: true } };
+  });
   assert.equal(worker.fetches(), 0);
+  for (const [message, origin] of [
+    [{ type: 'oit:launcher-start' }, sender],
+    [{ type: 'oit:start-tab', tabId: 12 }, {}],
+  ] as const) {
+    assert.match((await worker.send(message, origin)).error!, /translation service is offline.*retry/i);
+  }
+  assert.deepEqual(worker.sent, []);
+  assert.deepEqual(worker.injections, []);
+  assert.deepEqual(worker.styles, []);
+  assert.deepEqual(worker.session, {});
+  online = true;
+  assert.equal((await worker.send({ type: 'oit:launcher-start' }, sender)).ok, true);
+  assert.equal(worker.sent.length, 1);
+});
+
+test('unconfigured or invalid backends cannot start page translation', async () => {
+  for (const response of [{ ok: true, provider: { configured: false } }, { ok: true }, null]) {
+    const worker = background(async () => response);
+    assert.match((await worker.send({ type: 'oit:launcher-start' }, sender)).error!, /provider needs to be set up|not a working Open Immersive Translator backend/);
+    assert.deepEqual(worker.sent, []);
+    assert.deepEqual(worker.injections, []);
+  }
 });
 
 test('launcher rejects missing tabs, subframes and non-web senders before any action', async () => {

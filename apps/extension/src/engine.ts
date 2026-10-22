@@ -5,7 +5,7 @@ export interface TranslationReply {
   results: Array<{ id: string; text: string }>;
   errors: Array<{ id: string; message: string }>;
 }
-export interface PageStatus { state: 'idle' | 'translating' | 'ready'; total: number; translated: number; failed: number; pending: number }
+export interface PageStatus { state: 'idle' | 'translating' | 'ready'; total: number; translated: number; failed: number; pending: number; error?: string }
 export interface EngineOptions {
   targetLanguage: string;
   theme: 'subtle' | 'accent';
@@ -19,6 +19,7 @@ interface Paragraph {
   status: 'queued' | 'pending' | 'translated' | 'failed';
   visible: boolean;
   wrapper?: Element;
+  error?: string;
 }
 interface ScanTask { generation: number; iterator: Generator<Element | null>; candidates: Set<Element>; timer?: ReturnType<typeof setTimeout> }
 
@@ -29,6 +30,7 @@ export class PageTranslator {
   private nextId = 0;
   private enabled = false;
   private busy = false;
+  private pausedError?: string;
   private observer?: MutationObserver;
   private intersections?: IntersectionObserver;
   private flushTimer?: ReturnType<typeof setTimeout>;
@@ -106,6 +108,7 @@ export class PageTranslator {
     for (const element of this.document.querySelectorAll(`[${OWNED}="translation"],[${OWNED}="controls"]`)) element.remove();
     this.records.clear();
     this.busy = false;
+    this.pausedError = undefined;
     this.report();
   }
 
@@ -114,7 +117,8 @@ export class PageTranslator {
     const translated = values.filter(record => record.status === 'translated').length;
     const failed = values.filter(record => record.status === 'failed').length;
     const pending = values.length - translated - failed;
-    return { state: !this.enabled ? 'idle' : pending || this.scans.size ? 'translating' : 'ready', total: values.length, translated, failed, pending };
+    const error = this.pausedError || values.find(record => record.status === 'failed')?.error;
+    return { state: !this.enabled ? 'idle' : pending || this.scans.size ? 'translating' : 'ready', total: values.length, translated, failed, pending, ...(error ? { error } : {}) };
   }
 
   private removeDetached(): void {
@@ -163,6 +167,7 @@ export class PageTranslator {
               const record: Paragraph = { id: `p${this.nextId++}`, host, source, status: 'queued',
                 visible: !this.intersections || (box.top < (this.document.defaultView?.innerHeight ?? 800) + 1200 && box.bottom >= -1200) };
               this.records.set(host, record); this.intersections?.observe(host);
+              if (this.pausedError) this.failParagraph(record, this.pausedError);
             }
           }
         }
@@ -180,7 +185,7 @@ export class PageTranslator {
   }
 
   private async flush(): Promise<void> {
-    if (!this.enabled || this.busy || !this.options) return;
+    if (!this.enabled || this.busy || !this.options || this.pausedError) return;
     this.removeDetached();
     const generation = this.generation;
     const selected: Paragraph[] = [];
@@ -202,8 +207,7 @@ export class PageTranslator {
     for (const record of queued) {
       if (record.status !== 'queued' || !record.visible) continue;
       if (record.source.text.length > 20000) {
-        record.status = 'failed';
-        this.showError(record, 'This paragraph is too long. Split it into smaller blocks.');
+        this.failParagraph(record, 'This paragraph is too long. Split it into smaller blocks.');
         continue;
       }
       if (selected.length && (selected.length >= 32 || size + record.source.text.length > 24000)) break;
@@ -223,10 +227,10 @@ export class PageTranslator {
       this.applyReply(selected, result, true);
     } catch (error) {
       if (!this.enabled || generation !== this.generation) return;
-      for (const record of selected) if (record.status === 'pending' && this.current(record)) {
-        record.status = 'failed';
-        this.showError(record, error instanceof Error ? error.message : 'Translation failed.');
-      }
+      // A dead service must not drain every queued/offscreen batch into failures.
+      // Keep completed translations and wait for an explicit user retry.
+      this.pausedError = (error instanceof Error ? error.message : 'Translation failed.').trim().slice(0, 600) || 'Translation failed.';
+      for (const record of [...this.records.values()]) if ((record.status === 'queued' || record.status === 'pending') && this.current(record)) this.failParagraph(record, this.pausedError);
     } finally {
       if (generation === this.generation) {
         this.busy = false;
@@ -255,7 +259,7 @@ export class PageTranslator {
         const wrapper = this.wrapper(record);
         wrapper.replaceChildren(fragment); record.status = 'translated';
       } catch (cause) {
-        record.status = 'failed'; this.showError(record, cause instanceof Error ? cause.message : 'Translation failed.');
+        this.failParagraph(record, cause instanceof Error ? cause.message : 'Translation failed.');
       }
     }
     this.report();
@@ -290,11 +294,13 @@ export class PageTranslator {
     return element;
   }
 
-  private showError(record: Paragraph, message: string): void {
-    const element = this.wrapper(record);
-    element.classList.add('oit-error');
-    element.textContent = 'Translation unavailable';
-    element.setAttribute('title', message);
+  private failParagraph(record: Paragraph, message: string): void {
+    record.status = 'failed';
+    record.error = message.trim().slice(0, 600) || 'Translation failed.';
+    // Failure belongs in the single page control. Repeated inline errors change
+    // website layout and provide no translated content to justify an overlay.
+    record.wrapper?.remove();
+    record.wrapper = undefined;
   }
 
   private inBody(host: Element): boolean {

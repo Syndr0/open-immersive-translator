@@ -5,18 +5,33 @@ import { FrameRegistry } from './frames';
 const frames = new FrameRegistry(chrome.storage.session);
 const statuses = new Map<number, Map<number, PageStatus>>();
 
-async function request(path: string, init: RequestInit = {}): Promise<unknown> {
+async function request(path: string, init: RequestInit = {}, timeoutMs = 20_000): Promise<unknown> {
   const settings = await getSettings();
-  const response = await fetch(`${settings.backendUrl}${path}`, {
-    ...init, signal: AbortSignal.timeout(20000),
-    headers: { 'Content-Type': 'application/json', ...init.headers },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${settings.backendUrl}${path}`, {
+      ...init, signal: AbortSignal.timeout(timeoutMs),
+      headers: { 'Content-Type': 'application/json', ...init.headers },
+    });
+  } catch {
+    throw new Error('The translation service is offline or not responding. Open the document translator or use Copy for your agent to start it, then retry.');
+  }
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.error?.message ?? body.error ?? `Server returned ${response.status}.`);
   return body;
 }
 
+async function health(): Promise<{ ok: true; provider: { configured: boolean; kind?: string; model?: string } }> {
+  const value = await request('/api/health', {}, 5_000) as { ok?: boolean; provider?: { configured?: boolean; kind?: string; model?: string } } | null;
+  if (value?.ok !== true || typeof value.provider?.configured !== 'boolean') {
+    throw new Error('The selected service is not a working Open Immersive Translator backend. Use Copy for your agent to check the connection.');
+  }
+  return value as { ok: true; provider: { configured: boolean; kind?: string; model?: string } };
+}
+
 async function start(tabId: number, fromLauncher = false): Promise<unknown> {
+  // Check only after an explicit Translate command, before scanning the page.
+  if (!(await health()).provider.configured) throw new Error('A translation provider needs to be set up. Use Copy for your agent below to finish setup, then retry.');
   const settings = await getSettings();
   let frameIds: number[];
   if (fromLauncher) {
@@ -56,6 +71,7 @@ async function status(tabId: number): Promise<PageStatus> {
     state: combined.state === 'translating' || value.state === 'translating' ? 'translating' : value.state === 'ready' || combined.state === 'ready' ? 'ready' : 'idle',
     total: combined.total + value.total, translated: combined.translated + value.translated,
     failed: combined.failed + value.failed, pending: combined.pending + value.pending,
+    ...(combined.error || value.error ? { error: combined.error || value.error } : {}),
   }), { state: 'idle', total: 0, translated: 0, failed: 0, pending: 0 } as PageStatus);
 }
 
@@ -86,7 +102,7 @@ async function handle(message: Record<string, unknown>, sender: chrome.runtime.M
   }
   // Commands are accepted only from this extension's own pages.
   if (sender.tab) throw new Error('This command is available only in the extension popup.');
-  if (message.type === 'oit:health') return request('/api/health');
+  if (message.type === 'oit:health') return health();
   if (message.type === 'oit:settings') return getSettings();
   if (message.type === 'oit:save-settings') {
     const old = await getSettings();

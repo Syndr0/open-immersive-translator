@@ -1,6 +1,122 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+
+type PopupHealth = 'offline' | 'healthy' | 'unconfigured' | 'invalid';
+interface PopupFixtureState {
+  health: PopupHealth;
+  messages: string[];
+  optionsOpened: number;
+  failAction?: string;
+}
+
+async function openPopupFixture(page: Page, health: PopupHealth): Promise<void> {
+  await page.clock.install();
+  await page.addInitScript(initialHealth => {
+    const fixture: PopupFixtureState = { health: initialHealth, messages: [], optionsOpened: 0 };
+    const state = window as unknown as { chrome: unknown; popupFixture: PopupFixtureState };
+    state.popupFixture = fixture;
+    state.chrome = {
+      tabs: { query: async () => [{ id: 1 }] },
+      storage: { local: { get: async () => ({}), set: async () => {} } },
+      runtime: {
+        openOptionsPage: async () => { fixture.optionsOpened++; },
+        sendMessage: async (message: { type: string }) => {
+          fixture.messages.push(message.type);
+          if (fixture.failAction === message.type) return { error: 'The local service is unavailable for this action.' };
+          if (message.type === 'oit:health') {
+            if (fixture.health === 'offline') return { error: 'The local service is unavailable' };
+            return { ok: fixture.health !== 'invalid', provider: { kind: 'google-free', model: 'web-unofficial', configured: fixture.health !== 'unconfigured' } };
+          }
+          if (message.type === 'oit:settings') return { backendUrl: 'http://127.0.0.1:8787', readerUrl: 'http://127.0.0.1:8787', targetLanguage: 'zh-Hans', sourceLanguage: 'auto', theme: 'subtle' };
+          if (message.type === 'oit:tab-status') return { state: 'idle', total: 0, translated: 0, failed: 0, pending: 0 };
+          return {};
+        },
+      },
+    };
+  }, health);
+  await page.route('**/ui.css', async route => route.fulfill({ contentType: 'text/css', body: await readFile(resolve('apps/extension/dist/ui.css'), 'utf8') }));
+  const html = (await readFile(resolve('apps/extension/dist/popup.html'), 'utf8')).replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, '');
+  await page.route('**/extension-health-fixture', route => route.fulfill({ contentType: 'text/html', body: html }));
+  await page.goto('/extension-health-fixture');
+  // The built markup must be safe before asynchronous health/settings checks run.
+  await expect(page.locator('#translate')).toBeDisabled();
+  await expect(page.locator('#connection')).not.toHaveClass(/\bok\b/);
+  await page.addScriptTag({ path: resolve('apps/extension/dist/popup.js') });
+}
+
+async function setPopupHealth(page: Page, health: PopupHealth): Promise<void> {
+  await page.evaluate(value => { (window as unknown as { popupFixture: PopupFixtureState }).popupFixture.health = value; }, health);
+  await page.clock.runFor(3000);
+}
+
+test('built popup automatically recovers offline to healthy and disables translation when service disappears', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await openPopupFixture(page, 'offline');
+  const translate = page.locator('#translate'), connection = page.locator('#connection');
+  await expect(connection).toContainText('offline');
+  await expect(connection).not.toHaveClass(/\bok\b/);
+  await expect(translate).toBeDisabled();
+
+  await setPopupHealth(page, 'healthy');
+  await expect(connection).toContainText('google-free');
+  await expect(connection).toHaveClass(/\bok\b/);
+  await expect(translate).toBeEnabled();
+
+  await setPopupHealth(page, 'offline');
+  await expect(connection).toContainText('offline');
+  await expect(connection).not.toHaveClass(/\bok\b/);
+  await expect(translate).toBeDisabled();
+  // Action completion must not overwrite the last known unhealthy state.
+  await page.locator('#restore').click();
+  await expect(translate).toBeDisabled();
+  await page.locator('#language').selectOption('ja');
+  await expect(translate).toBeDisabled();
+  await page.locator('#settings').click();
+  await expect(translate).toBeDisabled();
+  const fixture = await page.evaluate(() => (window as unknown as { popupFixture: PopupFixtureState }).popupFixture);
+  expect(fixture.messages.filter(type => type === 'oit:health').length).toBeGreaterThanOrEqual(3);
+  expect(fixture.messages).toContain('oit:restore-tab');
+  expect(fixture.messages).toContain('oit:save-settings');
+  expect(fixture.optionsOpened).toBe(1);
+  expect(fixture.messages).not.toContain('oit:start-tab');
+  expect(errors).toEqual([]);
+});
+
+test('built popup requires both successful health and a configured provider', async ({ page }) => {
+  await openPopupFixture(page, 'unconfigured');
+  const translate = page.locator('#translate'), connection = page.locator('#connection');
+  await expect(connection).toContainText('Setup needed');
+  await expect(connection).not.toHaveClass(/\bok\b/);
+  await expect(translate).toBeDisabled();
+  await page.locator('#restore').click();
+  await page.locator('#language').selectOption('fr');
+  await expect(translate).toBeDisabled();
+
+  // A configured provider on a failed health response is still not ready.
+  await setPopupHealth(page, 'invalid');
+  await expect(connection).toContainText('Setup needed');
+  await expect(connection).not.toHaveClass(/\bok\b/);
+  await expect(translate).toBeDisabled();
+  await setPopupHealth(page, 'healthy');
+  await expect(translate).toBeEnabled();
+});
+
+test('failed offline actions stay visible across reconnect polling and never enable Translate', async ({ page }) => {
+  await openPopupFixture(page, 'offline');
+  await expect(page.locator('#connection')).toContainText('offline');
+  await page.evaluate(() => { (window as unknown as { popupFixture: PopupFixtureState }).popupFixture.failAction = 'oit:reader'; });
+  await page.locator('#reader').click();
+  await expect(page.locator('#error')).toHaveText('The local service is unavailable for this action.');
+  await expect(page.locator('#error')).toBeVisible();
+  await expect(page.locator('#translate')).toBeDisabled();
+  await page.clock.runFor(6000);
+  await expect(page.locator('#error')).toHaveText('The local service is unavailable for this action.');
+  await expect(page.locator('#connection')).toContainText('offline');
+  await expect(page.locator('#connection')).not.toHaveClass(/\bok\b/);
+  await expect(page.locator('#translate')).toBeDisabled();
+});
 
 test('built extension popup and settings offer agent setup with a clipboard fallback', async ({ page }) => {
   await page.addInitScript(() => {

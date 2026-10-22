@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 
-test('native MV3 launcher survives HTML-root/head mutations and keeps translations inside body', async ({ request }, testInfo) => {
+test('native MV3 launcher recovers an offline backend and keeps translations inside body through root mutations', async ({ request }, testInfo) => {
   // This is a fresh automated Chromium profile with the actual unpacked extension.
   // It does not access or validate the user's installed Chrome extension/profile.
   const health = await (await request.get('/api/health')).json();
@@ -33,7 +33,7 @@ test('native MV3 launcher survives HTML-root/head mutations and keeps translatio
     expect(workerUrl).toMatch(/^chrome-extension:\/\/[a-p]{32}\/background\.js$/);
     await worker.evaluate(async backend => {
       await chrome.storage.local.set({ settings: { backendUrl: backend, readerUrl: backend, sourceLanguage: 'auto', targetLanguage: 'fr', theme: 'subtle' } });
-    }, backendUrl);
+    }, 'http://127.0.0.1:65534');
     const page = await context.newPage();
     await page.route('https://example.org/native-root-mutations', route => route.fulfill({ contentType: 'text/html', body: `<!doctype html><html lang="en"><head><title>Native fixture title</title></head><body>
       <main><h1>Reading content stays in the body</h1><p id="original">Read <a href="https://example.org/research">this research</a> and keep <code>npm test</code> unchanged.</p></main>
@@ -45,6 +45,17 @@ test('native MV3 launcher survives HTML-root/head mutations and keeps translatio
     await expect(page.locator('[data-oit-owned="translation"]')).toHaveCount(0);
     expect(inputs).toHaveLength(0);
     await launcher.getByRole('button', { name: 'Translate this page', exact: true }).click();
+    await expect(launcher.getByRole('status')).toContainText('translation service is offline');
+    await expect(launcher.getByRole('button', { name: 'Retry page translation', exact: true })).toBeVisible();
+    await expect(page.locator('[data-oit-owned="translation"]')).toHaveCount(0);
+    await expect(page.locator('[data-oit-pending="true"]')).toHaveCount(0);
+    expect(inputs).toHaveLength(0);
+    expect(await page.locator('#original').innerHTML()).toBe(original);
+    await worker.evaluate(async backend => {
+      const { settings } = await chrome.storage.local.get('settings');
+      await chrome.storage.local.set({ settings: { ...(settings as Record<string, unknown>), backendUrl: backend, readerUrl: backend } });
+    }, backendUrl);
+    await launcher.getByRole('button', { name: 'Retry page translation', exact: true }).click();
     await expect(page.locator('#original + [data-oit-owned="translation"]')).toContainText('[Demo');
 
     // Portals/analytics can add direct root text or update head/title while the

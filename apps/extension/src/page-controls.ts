@@ -61,7 +61,7 @@ export function createPageControls(document: Document, actions: PageControlActio
       width: max-content; max-width: min(240px, calc(100vw - 100px)); padding: 9px 11px; border: 1px solid #d7d7d7;
       border-radius: 7px; background: #fff; color: #555; box-shadow: 0 3px 16px #0001; font-size: 11px; line-height: 1.6;
       pointer-events: none; opacity: 0; visibility: hidden; overflow-wrap: anywhere; }
-    :host(:hover) .tooltip, :host(:focus-within) .tooltip { opacity: 1; visibility: visible; }
+    :host(:hover) .tooltip, :host(:focus-within) .tooltip, .rail.has-error ~ .tooltip { opacity: 1; visibility: visible; }
     .tooltip strong { display: block; color: #222; font-weight: 600; margin-bottom: 2px; }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
       clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
@@ -109,25 +109,28 @@ export function createPageControls(document: Document, actions: PageControlActio
     if (restoring) return 'Restoring the original page…';
     if (starting) return 'Starting translation…';
     if (value.state === 'idle') return 'Translate this page with your configured translation service.';
-    return `${value.translated} of ${value.total} paragraphs translated${value.failed ? ` · ${value.failed} unavailable` : ''}${value.pending ? ` · ${value.pending} remaining` : ''}`;
+    const counts = `${value.translated} of ${value.total} paragraphs translated${value.failed ? ` · ${value.failed} unavailable` : ''}${value.pending ? ` · ${value.pending} remaining` : ''}`;
+    if (value.failed && !value.pending) return `${counts}. ${value.error || 'Some paragraphs could not be translated.'} Original text is preserved. Choose Retry to try again.`;
+    return counts;
   }
 
   function render() {
     if (!active) return;
     const working = starting || value.state === 'translating';
     const hasTranslation = value.state !== 'idle';
+    const retry = !!error || (value.failed > 0 && !working && !restoring);
     rail.classList.toggle('working', working && !restoring);
-    rail.classList.toggle('has-error', !!error);
+    rail.classList.toggle('has-error', retry);
     translate.disabled = working || restoring;
-    translate.setAttribute('aria-label', hasTranslation ? value.state === 'translating' ? 'Translation in progress' : 'Translate this page again' : 'Translate this page');
+    translate.setAttribute('aria-label', retry ? 'Retry page translation' : hasTranslation ? value.state === 'translating' ? 'Translation in progress' : 'Translate this page again' : 'Translate this page');
     translate.setAttribute('aria-busy', String(working));
-    label.textContent = restoring ? 'Restoring' : starting ? 'Starting' : value.state === 'translating' ? 'Translating' : error ? 'Retry' : hasTranslation ? 'Translated' : 'Translate';
+    label.textContent = restoring ? 'Restoring' : starting ? 'Starting' : value.state === 'translating' ? 'Translating' : retry ? 'Retry' : hasTranslation ? 'Translated' : 'Translate';
     progress.textContent = `${value.translated}/${value.total}`;
     progress.hidden = !hasTranslation || starting || restoring;
     restore.hidden = !hasTranslation && !restoring;
     restore.disabled = restoring;
     const text = summary(); status.textContent = text; detail.textContent = text;
-    translate.title = hasTranslation && !working ? 'Translate this page again' : text;
+    translate.title = retry ? text : hasTranslation && !working ? 'Translate this page again' : text;
     restore.title = 'Remove translations and show the original page';
   }
 

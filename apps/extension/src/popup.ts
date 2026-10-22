@@ -11,6 +11,13 @@ const error = element('error');
 const connection = element('connection');
 const status = element('status');
 let tabId: number | undefined;
+let serviceReady = false;
+let actionPending = false;
+let checkingConnection = false;
+
+function updateTranslate(): void {
+  translate.disabled = actionPending || !serviceReady || tabId === undefined;
+}
 
 async function send(message: Record<string, unknown>): Promise<any> {
   const reply = await chrome.runtime.sendMessage(message);
@@ -21,13 +28,32 @@ async function updateStatus(): Promise<void> {
   if (tabId === undefined) return;
   const value = await send({ type: 'oit:tab-status', tabId }) as PageStatus;
   status.textContent = value.state === 'idle' ? 'The original page stays intact.' : `${value.translated} of ${value.total} paragraphs translated${value.failed ? ` · ${value.failed} unavailable` : ''}${value.pending ? ' · Scroll to translate more' : ''}`;
+  if (value.error) status.textContent += ` · ${value.error}`;
+}
+async function updateConnection(): Promise<void> {
+  if (checkingConnection) return;
+  checkingConnection = true;
+  try {
+    const health = await send({ type: 'oit:health' });
+    serviceReady = health.ok === true && health.provider?.configured === true;
+    connection.classList.toggle('ok', serviceReady);
+    connection.textContent = !serviceReady ? 'Setup needed · Use Copy for your agent below' : health.provider.kind === 'demo' ? 'DEMO MODE · Test output, not real translation' : `${health.provider.kind ?? 'Local server'} · ${health.provider.model ?? 'Connected'}`;
+  } catch {
+    serviceReady = false;
+    connection.classList.remove('ok');
+    connection.textContent = 'Translation service offline · Open the document translator or use Copy for your agent below. Reconnecting automatically…';
+  } finally {
+    checkingConnection = false;
+    updateTranslate();
+  }
 }
 async function action(task: () => Promise<unknown>): Promise<void> {
   error.textContent = '';
-  translate.disabled = true;
+  actionPending = true;
+  updateTranslate();
   try { await task(); await updateStatus(); }
   catch (cause) { error.textContent = cause instanceof Error ? cause.message : 'The request failed.'; }
-  finally { translate.disabled = false; }
+  finally { actionPending = false; updateTranslate(); }
 }
 
 language.addEventListener('change', () => { void action(() => send({ type: 'oit:save-settings', settings: { targetLanguage: language.value } })); });
@@ -46,13 +72,8 @@ void (async () => {
   const settings: Settings = await send({ type: 'oit:settings' }).catch(() => defaults);
   if (![...language.options].some(option => option.value === settings.targetLanguage)) language.add(new Option(settings.targetLanguage, settings.targetLanguage));
   language.value = settings.targetLanguage;
-  try {
-    const health = await send({ type: 'oit:health' });
-    connection.classList.add('ok');
-    connection.textContent = health.provider?.configured === false ? 'Setup needed · Use Copy for your agent below' : health.provider?.kind === 'demo' ? 'DEMO MODE · Test output, not real translation' : `${health.provider?.kind ?? 'Local server'} · ${health.provider?.model ?? 'Connected'}`;
-  } catch {
-    connection.textContent = 'Service unavailable · Use Copy for your agent below';
-  }
+  await updateConnection();
   await updateStatus().catch(() => {});
   setInterval(() => { void updateStatus().catch(() => {}); }, 1200);
+  setInterval(() => { void updateConnection(); }, 3000);
 })().catch(cause => { error.textContent = String(cause); });

@@ -128,6 +128,33 @@ test('errors are plain text and a later idle report clears them without removing
   controls.remove(); window.close();
 });
 
+test('paragraph failures appear once in the launcher with Retry and clear on recovery or Restore', () => {
+  const window = new JSDOM('<p>Original source.</p>').window;
+  const controls = createPageControls(window.document, { start: () => {}, restore: () => {} });
+  const host = window.document.querySelector(selector)!;
+  const root = host.shadowRoot!;
+  controls.update({ state: 'ready', total: 150, translated: 0, failed: 150, pending: 0, error: 'Cannot reach the local service.' });
+  const retry = root.querySelector('[data-action="translate"]') as HTMLButtonElement;
+  assert.equal(retry.disabled, false);
+  assert.equal(retry.getAttribute('aria-label'), 'Retry page translation');
+  assert.equal(root.querySelector('.label')?.textContent, 'Retry');
+  assert.equal(root.querySelector('[data-role="progress"]')?.textContent, '0/150');
+  assert.match(root.querySelector('[data-role="status"]')!.textContent!, /150 unavailable.*Cannot reach the local service.*Choose Retry/);
+  assert.equal(root.querySelectorAll('[role="status"]').length, 1);
+  assert.equal(root.querySelector('.rail')?.classList.contains('has-error'), true);
+  assert.equal(window.document.querySelector('p')?.textContent, 'Original source.');
+  controls.update(translating);
+  assert.equal(root.querySelector('.rail')?.classList.contains('has-error'), false);
+  assert.equal(root.querySelector('[data-role="status"]')?.textContent?.includes('Cannot reach'), false);
+  controls.update(ready);
+  assert.equal(root.querySelector('.label')?.textContent, 'Translated');
+  controls.update(idle);
+  assert.equal(root.querySelector('.label')?.textContent, 'Translate');
+  assert.equal(root.querySelector('[data-role="status"]')?.textContent?.includes('unavailable'), false);
+  assert.equal(window.document.querySelector(selector), host);
+  controls.remove(); window.close();
+});
+
 test('remove permanently disables reattachment and clears inert cloned launchers', async () => {
   const window = new JSDOM('<p>Original source.</p>').window;
   const controls = createPageControls(window.document, { start: () => {}, restore: () => {} });
