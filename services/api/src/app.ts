@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { TranslationBroker, protect, restore, type Provider, type TranslationJob } from '@oit/core';
 import { Store } from './store.ts';
 import { parseDocument } from './parser.ts';
@@ -18,6 +18,8 @@ const requestSchema = z.object({
 });
 const translationSchema = z.object({ targetLanguage: language, sourceLanguage: language.optional() });
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
+const version = (JSON.parse(readFileSync(resolve(repoRoot, 'package.json'), 'utf8')) as { version: string }).version;
+const MAX_JOBS = 1000;
 
 export async function createApp(options: { dataDir?: string; provider?: Provider; env?: NodeJS.ProcessEnv } = {}) {
   const env = options.env || process.env;
@@ -35,6 +37,8 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
     const hostname = request.hostname;
     if (!['127.0.0.1', 'localhost', '[::1]', '::1'].includes(hostname)) { response.status(403).json({ error: 'Only loopback hostnames are allowed' }); return; }
     response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.setHeader('Referrer-Policy', 'no-referrer');
+    response.setHeader('X-Frame-Options', 'SAMEORIGIN');
     next();
   });
   const appPort = env.PORT || '8787';
@@ -44,7 +48,15 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
   }, exposedHeaders: ['Content-Disposition'] }));
   app.use(express.json({ limit: '2mb' }));
 
-  app.get('/api/health', (_request, response) => response.json({ ok: true, version: '0.1.0', provider: { kind: provider.kind, model: provider.model, configured: provider.configured } }));
+  // Finished jobs are kept for status polling, then evicted oldest-first.
+  function track(job: TranslationJob, controller: AbortController) {
+    if (jobs.size >= MAX_JOBS) for (const id of jobs.keys()) { if (!controllers.has(id)) jobs.delete(id); if (jobs.size < MAX_JOBS * .9) break; }
+    if (jobs.size >= MAX_JOBS) return false;
+    jobs.set(job.id, job); controllers.set(job.id, controller);
+    return true;
+  }
+
+  app.get('/api/health', (_request, response) => response.json({ ok: true, version, provider: { kind: provider.kind, model: provider.model, configured: provider.configured } }));
   app.post('/api/translate', async (request, response) => {
     const input = requestSchema.parse(request.body);
     if (input.segments.reduce((sum, segment) => sum + segment.text.length, 0) > 200_000) { response.status(400).json({ error: 'Request exceeds 200000 characters' }); return; }
@@ -55,13 +67,9 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
   app.post('/api/translation-jobs', (request, response) => {
     const input = requestSchema.parse(request.body);
     if (input.segments.reduce((sum, segment) => sum + segment.text.length, 0) > 200_000) { response.status(400).json({ error: 'Request exceeds 200000 characters' }); return; }
-    if (jobs.size >= 1000) {
-      for (const [id, job] of jobs) if (!controllers.has(id)) { jobs.delete(id); if (jobs.size < 900) break; }
-      if (jobs.size >= 1000) { response.status(429).json({ error: 'Too many active jobs' }); return; }
-    }
     const job: TranslationJob = { id: randomUUID(), status: 'queued', completed: 0, total: input.segments.length };
     const controller = new AbortController();
-    jobs.set(job.id, job); controllers.set(job.id, controller);
+    if (!track(job, controller)) { response.status(429).json({ error: 'Too many active jobs' }); return; }
     response.status(202).json({ jobId: job.id });
     void (async () => {
       job.status = 'running';
@@ -90,11 +98,18 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
     await store.create(document, request.body);
     response.status(201).json({ document });
   });
+  app.get('/api/documents', async (_request, response) => { response.json({ documents: await store.list() }); });
   app.get('/api/documents/:id', async (request, response) => {
     const record = await store.load(request.params.id);
     if (!record) { response.status(404).json({ error: 'Document not found' }); return; }
     const selected = typeof request.query.targetLanguage === 'string' ? request.query.targetLanguage : record.latestLanguage;
     response.json({ document: record.document, translations: selected ? record.translations[selected] : undefined });
+  });
+  app.delete('/api/documents/:id', async (request, response) => {
+    const id = request.params.id;
+    for (const [key, controller] of activeTranslations) if (key.startsWith(`${id}:`)) controller.abort(new Error('Document deleted'));
+    if (!(await store.delete(id))) { response.status(404).json({ error: 'Document not found' }); return; }
+    response.status(204).end();
   });
   app.get('/api/documents/:id/source', async (request, response) => {
     const record = await store.load(request.params.id);
@@ -114,8 +129,8 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
     const blocks = record.document.blocks.filter(block => block.type !== 'code');
     const job: TranslationJob = { id: randomUUID(), status: 'queued', completed: 0, total: blocks.length };
     const controller = new AbortController();
+    if (!track(job, controller)) { response.status(429).json({ error: 'Too many active jobs' }); return; }
     activeTranslations.set(translationKey, controller);
-    jobs.set(job.id, job); controllers.set(job.id, controller);
     // Each job owns its result overlay. Late/cancelled jobs cannot mutate a saved translation.
     const initial = { ...(record.translations[input.targetLanguage]?.units || {}) };
     response.status(202).json({ jobId: job.id });
@@ -135,7 +150,8 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
         // Commit each successful batch so progress, partial failures and cancellation
         // keep already completed work. Reload to preserve other languages/edits.
         if (result.results.length) {
-          const current = (await store.load(record.document.id))!;
+          const current = await store.load(record.document.id);
+          if (!current) throw new Error('Document was deleted');
           controller.signal.throwIfAborted();
           if (generations.get(translationKey) !== generation) throw new Error('Translation changed while this job was running');
           current.translations[input.targetLanguage] = { targetLanguage: input.targetLanguage, units: { ...units } };
@@ -239,6 +255,7 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
   app.use((error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
     if (error instanceof z.ZodError) { response.status(400).json({ error: 'Invalid request', details: error.issues.map(issue => ({ path: issue.path, message: issue.message })) }); return; }
     const status = (error as { status?: number }).status;
+    if (status && status >= 500) console.error(error);
     response.status(status && status >= 400 && status < 600 ? status : 400).json({ error: error instanceof Error ? error.message : 'Request failed' });
   });
   return { app, store, broker, jobs, close: () => { for (const controller of controllers.values()) controller.abort(new Error('Server shutting down')); } };

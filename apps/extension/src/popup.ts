@@ -10,6 +10,7 @@ const translate = element<HTMLButtonElement>('translate');
 const error = element('error');
 const connection = element('connection');
 const status = element('status');
+const agentHelp = element('agent-help');
 let tabId: number | undefined;
 let serviceReady = false;
 let actionPending = false;
@@ -27,7 +28,7 @@ async function send(message: Record<string, unknown>): Promise<any> {
 async function updateStatus(): Promise<void> {
   if (tabId === undefined) return;
   const value = await send({ type: 'oit:tab-status', tabId }) as PageStatus;
-  status.textContent = value.state === 'idle' ? 'The original page stays intact.' : `${value.translated} of ${value.total} paragraphs translated${value.skipped ? ` · ${value.skipped} unchanged` : ''}${value.failed ? ` · ${value.failed} unavailable` : ''}${value.state === 'waiting' ? ' · Ready. Scroll to translate more.' : value.pending ? ` · ${value.pending} remaining` : ''}`;
+  status.textContent = value.state === 'idle' ? '' : `${value.translated} of ${value.total} paragraphs translated${value.skipped ? ` · ${value.skipped} unchanged` : ''}${value.failed ? ` · ${value.failed} unavailable` : ''}${value.state === 'waiting' ? ' · Ready. Scroll to translate more.' : value.pending ? ` · ${value.pending} remaining` : ''}`;
   if (value.error) status.textContent += ` · ${value.error}`;
 }
 async function updateConnection(): Promise<void> {
@@ -41,9 +42,10 @@ async function updateConnection(): Promise<void> {
   } catch {
     serviceReady = false;
     connection.classList.remove('ok');
-    connection.textContent = 'Translation service offline · Open the document translator or use Copy for your agent below. Reconnecting automatically…';
+    connection.textContent = 'Translation service offline · Use Copy for your agent below';
   } finally {
     checkingConnection = false;
+    agentHelp.hidden = serviceReady;
     updateTranslate();
   }
 }

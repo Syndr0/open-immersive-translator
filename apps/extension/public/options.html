@@ -1,13 +1,13 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Settings · Open Immersive Translator</title><link rel="stylesheet" href="ui.css"></head>
-<body class="options"><header><span class="logo">文</span><div><h1>Make it yours</h1><p>Open Immersive Translator settings</p></div></header><main>
-  <section class="agent-help" aria-label="Agent setup"><h2>No technical setup needed from you</h2><p>Copy this request into Codex or another coding agent. Your agent can install the service, connect translation and prepare the Chrome extension.</p><button id="copy-agent" class="secondary">Copy for your agent</button><p id="agent-copy-status" role="status" aria-live="polite"></p><details id="agent-preview"><summary>View agent request</summary><textarea id="agent-prompt" aria-label="Website setup request for your agent" readonly rows="9"></textarea></details></section>
+<body class="options"><header><span class="logo" aria-hidden="true">文</span><h1>Settings</h1></header><main>
+  <section class="agent-help" aria-label="Agent setup"><h2>Let your agent set it up</h2><button id="copy-agent" class="secondary">Copy for your agent</button><p id="agent-copy-status" role="status" aria-live="polite"></p><details id="agent-preview"><summary>View agent request</summary><textarea id="agent-prompt" aria-label="Website setup request for your agent" readonly rows="9"></textarea></details></section>
   <details class="manual-settings"><summary>Manual settings</summary>
-  <form id="form"><label for="backend">Translation server</label><input id="backend" type="url" placeholder="http://127.0.0.1:8787" required><p class="help">Run the project's local API. Provider credentials are configured on that server, never in this extension. This release connects to localhost only.</p>
+  <form id="form"><label for="backend">Translation server</label><input id="backend" type="url" placeholder="http://127.0.0.1:8787" required><p class="help">Localhost only. Provider credentials stay on the server.</p>
   <label for="reader-url">Document app</label><input id="reader-url" type="url" placeholder="http://127.0.0.1:8787" required>
-  <label for="target">Target language</label><input id="target" placeholder="zh-Hans" required><p class="help">A language tag such as en, zh-Hans, ja, es, or ar.</p>
+  <label for="target">Target language</label><input id="target" placeholder="zh-Hans" required>
   <label for="source">Source language</label><input id="source" placeholder="auto" required>
-  <label for="theme">Bilingual style</label><select id="theme"><option value="subtle">Subtle divider</option><option value="accent">Red accent</option></select>
-  <button class="primary" type="submit">Save settings</button><p id="message" role="status"></p></form></details>
-  <aside><h2>How it works</h2><p>Click the toolbar button on a website, then choose Translate. Only that tab is granted access. Code and equations are protected; the original content remains available. Reloading the page clears the translation.</p><p>Chrome internal pages, the Chrome Web Store, browser PDF views, shadow-root content, and inaccessible frames cannot be translated through this DOM workflow. For production, set Document app to http://127.0.0.1:8787.</p></aside>
+  <label for="theme">Bilingual style</label><select id="theme"><option value="subtle">Plain</option><option value="accent">Side bar</option></select>
+  <button class="primary" type="submit">Save</button><p id="message" role="status"></p></form></details>
+  <aside><p>Chrome internal pages, the Chrome Web Store, browser PDF views, shadow-root content and inaccessible frames cannot be translated. Reloading a page clears its translation.</p></aside>
 </main><script src="options.js"></script></body></html>

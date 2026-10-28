@@ -307,3 +307,33 @@ test('documents use the provider batch capacity instead of a fixed eight-block s
     assert.deepEqual(batches, [20]);
   } finally { api.close(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(dataDir, { recursive: true, force: true }); }
 });
+
+test('library lists documents newest first and delete removes source, record and running work', async () => {
+  const dataDir = await mkdtemp(`${tmpdir()}/oit-library-test-`);
+  let release: (() => void) | undefined;
+  const provider: Provider = { ...fixture, async translate(segments) { await new Promise<void>(resolve => { release = resolve; }); return segments; } };
+  const api = await createApp({ dataDir, provider });
+  const server = api.app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const upload = (name: string) => fetch(`${base}/api/documents`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-File-Name': name }, body: `Text of ${name}` }).then(r => r.json());
+  try {
+    const { document: first } = await upload('first.txt');
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const { document: second } = await upload('second.txt');
+    const { documents } = await fetch(`${base}/api/documents`).then(r => r.json());
+    assert.deepEqual(documents.map((item: { name: string }) => item.name), ['second.txt', 'first.txt']);
+    assert.equal(documents[0].blockCount, 1);
+    assert.equal('blocks' in documents[0], false);
+
+    const { jobId } = await fetch(`${base}/api/documents/${second.id}/translate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ targetLanguage: 'fr' }) }).then(r => r.json());
+    assert.equal((await fetch(`${base}/api/documents/${second.id}`, { method: 'DELETE' })).status, 204);
+    release?.();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal((await fetch(`${base}/api/jobs/${jobId}`).then(r => r.json())).status, 'cancelled');
+    assert.equal((await fetch(`${base}/api/documents/${second.id}`)).status, 404);
+    assert.equal((await fetch(`${base}/api/documents/${second.id}/source`)).status, 404);
+    assert.equal((await fetch(`${base}/api/documents/${second.id}`, { method: 'DELETE' })).status, 404);
+    const reloaded = await createApp({ dataDir, provider: fixture });
+    assert.deepEqual((await reloaded.store.list()).map(item => item.id), [first.id]);
+  } finally { release?.(); api.close(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(dataDir, { recursive: true, force: true }); }
+});

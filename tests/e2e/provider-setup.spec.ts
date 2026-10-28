@@ -31,9 +31,9 @@ test('Google provider setup stays on the backend and is available in both interf
   await expect(dialog.getByRole('link', { name: 'Google Cloud 配置指南' })).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-  const done = dialog.getByRole('button', { name: '知道了', exact: true });
-  await done.scrollIntoViewIfNeeded();
-  await expect(done).toBeInViewport();
+  const close = dialog.getByRole('button', { name: '关闭对话框', exact: true });
+  await close.scrollIntoViewIfNeeded();
+  await expect(close).toBeInViewport();
 });
 
 test('a missing Google API key leaves document import available and translation disabled', async ({ page }) => {

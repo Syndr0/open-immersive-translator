@@ -6,25 +6,25 @@ test('interface language switches independently and survives a reload', async ({
   const chinese = page.getByTestId('ui-language-zh');
   const heading = page.locator('.page-heading h1');
 
-  await expect(heading).toHaveText('Document translation.');
+  await expect(heading).toHaveText('Documents');
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
   await expect(english).toHaveAttribute('aria-pressed', 'true');
   await expect(chinese).toHaveAttribute('aria-pressed', 'false');
 
   await chinese.click();
-  await expect(heading).toContainText('文档翻译');
+  await expect(heading).toHaveText('文档');
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
   await expect(chinese).toHaveAttribute('aria-pressed', 'true');
   await expect(english).toHaveAttribute('aria-pressed', 'false');
   expect(await page.evaluate(() => localStorage.getItem('oit.interface-language.v1'))).toBeTruthy();
 
   await page.reload();
-  await expect(heading).toContainText('文档翻译');
+  await expect(heading).toHaveText('文档');
   await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
   await expect(chinese).toHaveAttribute('aria-pressed', 'true');
 
   await english.click();
-  await expect(heading).toHaveText('Document translation.');
+  await expect(heading).toHaveText('Documents');
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
   await expect(english).toHaveAttribute('aria-pressed', 'true');
   await expect(chinese).toHaveAttribute('aria-pressed', 'false');
@@ -41,13 +41,13 @@ test('interface language controls stay visible without horizontal overflow on mo
   await expect(english).toBeInViewport();
   await expect(chinese).toBeInViewport();
   await chinese.click();
-  await expect(page.locator('.page-heading h1')).toContainText('文档翻译');
+  await expect(page.locator('.page-heading h1')).toHaveText('文档');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await expect(english).toBeInViewport();
   await expect(chinese).toBeInViewport();
 
   await english.click();
-  await expect(page.locator('.page-heading h1')).toHaveText('Document translation.');
+  await expect(page.locator('.page-heading h1')).toHaveText('Documents');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
@@ -91,14 +91,14 @@ test('changing interface language preserves document, target, translations and a
   await draft.fill(unsaved);
 
   await page.getByTestId('ui-language-zh').click();
-  await expect(page.locator('.page-heading h1')).toContainText('文档翻译');
+  await expect(page.locator('.page-heading h1')).toHaveText('文档');
   await expect(target).toHaveValue('es');
   await expect(draft).toHaveValue(unsaved);
   await expect(page.locator('.source-content')).toHaveText(originalSource);
   await expect(page.locator('.translated-content')).toHaveCount(3);
 
   await page.getByTestId('ui-language-en').click();
-  await expect(page.locator('.page-heading h1')).toHaveText('Document translation.');
+  await expect(page.locator('.page-heading h1')).toHaveText('Documents');
   await expect(draft).toHaveValue(unsaved);
   await expect(target).toHaveValue('es');
   await page.locator('.edit-area').getByRole('button', { name: 'Cancel', exact: true }).click();
