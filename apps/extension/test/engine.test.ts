@@ -323,10 +323,18 @@ test('a reading batch can translate more than eight paragraphs together', async 
   const window = new JSDOM(`<main>${Array.from({ length: 20 }, (_, i) => `<p>Public reading paragraph number ${i}.</p>`).join('')}</main>`).window;
   const engine = new PageTranslator(window.document);
   const batches: number[] = [];
+  // Scanning is time-sliced, so a slow machine may send a small first batch.
+  // Holding it until every paragraph is discovered makes the next batch
+  // carry the remainder, whatever the scan speed.
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
   engine.start({ targetLanguage: 'fr', theme: 'subtle', translate: async segments => {
     batches.push(segments.length);
+    if (batches.length === 1) await gate;
     return { results: fixtureResults(segments), errors: [] };
   } });
+  await waitFor(() => batches.length === 1 && engine.status().total === 20);
+  release();
   await waitFor(() => engine.status().translated === 20);
   assert.ok(batches.some(count => count > 8), 'reading batches should no longer stop after eight paragraphs');
   assert.ok(batches.every(count => count <= 32), 'page batches remain bounded');
