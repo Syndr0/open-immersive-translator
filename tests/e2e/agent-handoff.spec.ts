@@ -44,7 +44,7 @@ test('document handoff has a selectable mobile fallback when clipboard access is
   await page.goto('/');
   await page.getByRole('button', { name: 'Use your AI agent', exact: true }).click();
   const dialog = page.getByRole('dialog');
-  await expect(dialog).toContainText('Upload a document to your agent’s chat');
+  await expect(dialog).toContainText('Attach your file in the agent’s chat');
   await dialog.getByRole('button', { name: 'Copy for your agent', exact: true }).click();
   await expect(dialog.getByRole('status')).toContainText('Clipboard access is unavailable');
   const prompt = dialog.getByRole('textbox', { name: 'Request to paste into your AI agent' });

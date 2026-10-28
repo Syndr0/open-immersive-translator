@@ -17,6 +17,17 @@ export interface ReadingDocument {
   createdAt: string;
 }
 
+export interface DocumentSummary {
+  id: string;
+  name: string;
+  format: string;
+  pageCount?: number;
+  blockCount: number;
+  createdAt: string;
+}
+
+export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+
 export interface DocumentResponse {
   document: ReadingDocument;
   translations?: { targetLanguage: string; units: Record<string, string> };
@@ -47,6 +58,7 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
     } catch { /* Never render a server HTML error as markup. */ }
     throw new Error(message);
   }
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 

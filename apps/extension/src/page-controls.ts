@@ -34,44 +34,50 @@ export function createPageControls(document: Document, actions: PageControlActio
   const style = document.createElement('style');
   style.textContent = `
     :host { all: initial; display: block; position: fixed; right: 12px; top: 50%; transform: translateY(-50%);
-      z-index: 2147483646; width: 64px; max-width: calc(100vw - 24px); color-scheme: light;
-      font: 11px/1.4 system-ui, -apple-system, sans-serif; direction: ltr; writing-mode: horizontal-tb;
-      isolation: isolate; }
+      z-index: 2147483646; width: 56px; max-width: calc(100vw - 24px); color-scheme: light dark;
+      font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      direction: ltr; writing-mode: horizontal-tb; isolation: isolate;
+      --bg: #fff; --text: #0f1419; --muted: #536471; --border: #cfd9de; --hover: rgba(15,20,25,.06);
+      --danger: #f4212e; --focus: #1d9bf0; --shadow: 0 0 15px rgba(101,119,134,.2), 0 0 3px 1px rgba(101,119,134,.15); }
+    @media (prefers-color-scheme: dark) {
+      :host { --bg: #000; --text: #e7e9ea; --muted: #71767b; --border: #2f3336; --hover: rgba(231,233,234,.1);
+        --shadow: 0 0 15px rgba(255,255,255,.12), 0 0 3px 1px rgba(255,255,255,.08); }
+    }
     *, *::before, *::after { box-sizing: border-box; }
-    .rail { display: flex; flex-direction: column; width: 64px; border: 1px solid #d2d2d2; border-radius: 12px;
-      background: #fff; color: #222; box-shadow: 0 3px 16px #0002; overflow: hidden; }
+    .rail { display: flex; flex-direction: column; width: 56px; border: 1px solid var(--border); border-radius: 28px;
+      background: var(--bg); color: var(--text); box-shadow: var(--shadow); overflow: hidden; }
     button { appearance: none; margin: 0; border: 0; background: transparent; color: inherit; font: inherit;
       cursor: pointer; -webkit-tap-highlight-color: transparent; }
-    button:focus-visible { outline: 2px solid #b31b1b; outline-offset: -4px; }
-    button:hover:not(:disabled) { background: #f4f4f4; }
+    button:focus-visible { outline: 2px solid var(--focus); outline-offset: -4px; }
+    button:hover:not(:disabled) { background: var(--hover); }
     button:disabled { cursor: default; }
     .translate { display: flex; flex-direction: column; align-items: center; justify-content: center;
-      width: 100%; min-height: 66px; gap: 4px; padding: 10px 3px 9px; }
-    .glyph { position: relative; width: 26px; height: 23px; font-size: 18px; line-height: 1; font-weight: 650; }
-    .glyph b { position: absolute; left: 0; top: 0; font-weight: 650; }
-    .glyph i { position: absolute; right: 0; bottom: 0; font-size: 14px; font-style: normal; color: #b31b1b; background: #fff; }
-    .label { font-size: 9px; line-height: 1.25; font-weight: 550; }
-    .progress { font-size: 9px; line-height: 1.2; color: #777; font-variant-numeric: tabular-nums; }
-    .restore { display: flex; align-items: center; justify-content: center; gap: 3px; width: 100%; min-height: 44px;
-      padding: 7px 3px; border-top: 1px solid #e2e2e2; font-size: 9px; color: #a31a1a; }
-    .restore-icon { font-size: 17px; line-height: 1; }
-    .restore:disabled { color: #888; }
+      width: 100%; min-height: 64px; gap: 4px; padding: 12px 2px 10px; }
+    .glyph { position: relative; width: 24px; height: 22px; font-size: 17px; line-height: 1; font-weight: 800; }
+    .glyph b { position: absolute; left: 0; top: 0; font-weight: 800; }
+    .glyph i { position: absolute; right: 0; bottom: 0; font-size: 13px; font-style: normal; font-weight: 700; color: var(--muted); background: var(--bg); }
+    .label { font-size: 11px; line-height: 1.2; font-weight: 700; }
+    .progress { font-size: 11px; line-height: 1.2; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .restore { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; width: 100%;
+      min-height: 48px; padding: 8px 2px; border-top: 1px solid var(--border); font-size: 11px; font-weight: 700; color: var(--muted); }
+    .restore:hover:not(:disabled) { color: var(--text); }
+    .restore-icon { font-size: 16px; line-height: 1; }
     [hidden] { display: none !important; }
     .tooltip { position: absolute; right: calc(100% + 10px); top: 50%; transform: translateY(-50%);
-      width: max-content; max-width: min(240px, calc(100vw - 100px)); padding: 9px 11px; border: 1px solid #d7d7d7;
-      border-radius: 7px; background: #fff; color: #555; box-shadow: 0 3px 16px #0001; font-size: 11px; line-height: 1.6;
-      pointer-events: none; opacity: 0; visibility: hidden; overflow-wrap: anywhere; }
+      width: max-content; max-width: min(260px, calc(100vw - 100px)); padding: 10px 12px; border-radius: 12px;
+      background: var(--text); color: var(--bg); box-shadow: var(--shadow); font-size: 13px; line-height: 1.5;
+      pointer-events: none; opacity: 0; visibility: hidden; overflow-wrap: anywhere; transition: opacity .15s; }
     :host(:hover) .tooltip, :host(:focus-within) .tooltip, .rail.has-error ~ .tooltip { opacity: 1; visibility: visible; }
-    .tooltip strong { display: block; color: #222; font-weight: 600; margin-bottom: 2px; }
+    .tooltip strong { display: block; font-weight: 700; margin-bottom: 2px; }
     .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
       clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
-    .working .glyph { width: 18px; height: 18px; border: 2px solid #dedede; border-right-color: #b31b1b;
+    .working .glyph { width: 18px; height: 18px; border: 2px solid var(--border); border-right-color: var(--text);
       border-radius: 50%; animation: oit-control-spin 1s linear infinite; }
     .working .glyph > * { display: none; }
-    .has-error .label { color: #a31a1a; }
+    .has-error .label { color: var(--danger); }
     @keyframes oit-control-spin { to { transform: rotate(360deg); } }
     @media (max-width: 480px) { :host { right: 8px; } }
-    @media (prefers-reduced-motion: reduce) { .working .glyph { animation: none; } }
+    @media (prefers-reduced-motion: reduce) { .working .glyph { animation: none; } .tooltip { transition: none; } }
     @media print { :host { display: none !important; } }
   `;
 

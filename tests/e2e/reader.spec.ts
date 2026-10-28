@@ -4,7 +4,7 @@ test('import, translate, edit, persist and export a bilingual document', async (
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Document translation.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Documents', level: 1 })).toBeVisible();
   await expect(page.getByText('Demo mode is active.')).toBeVisible();
 
   await page.getByLabel('Import document', { exact: true }).setInputFiles({
@@ -49,13 +49,35 @@ test('mobile layout, settings and language changes remain usable', async ({ page
   await page.getByRole('button', { name: 'Open library', exact: true }).click();
   await page.getByRole('button', { name: 'Website translation', exact: false }).click();
   await expect(page.getByRole('dialog')).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Translate the web, too.' })).toBeVisible();
-  await page.getByRole('button', { name: 'Got it' }).click();
+  await expect(page.getByRole('heading', { name: 'Translate websites' })).toBeVisible();
+  await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
   await page.getByRole('button', { name: 'Open library', exact: true }).click();
   await page.locator('.provider-card').click();
-  await expect(page.getByRole('heading', { name: 'A provider of your own.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Translation provider' })).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toHaveCount(0);
   const noOverflow = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
   expect(noOverflow).toBe(true);
+});
+
+test('library lists server documents and deletes the open one after confirmation', async ({ page }) => {
+  await page.goto('/');
+  await page.getByLabel('Import document', { exact: true }).setInputFiles({
+    name: 'to-delete.md', mimeType: 'text/markdown', buffer: Buffer.from('# Temporary\n\nThis document will be deleted.\n'),
+  });
+  await expect(page.getByRole('heading', { name: 'to-delete.md' })).toBeVisible();
+  const item = page.locator('.library-item', { hasText: 'to-delete.md' });
+  await expect(item).toHaveCount(1);
+
+  page.once('dialog', dialog => dialog.dismiss());
+  await item.getByRole('button', { name: 'Delete to-delete.md', exact: true }).click();
+  await expect(item).toHaveCount(1);
+
+  page.once('dialog', dialog => dialog.accept());
+  await item.getByRole('button', { name: 'Delete to-delete.md', exact: true }).click();
+  await expect(item).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Drop a document here' })).toBeVisible();
+  expect(new URL(page.url()).searchParams.has('document')).toBe(false);
+  await page.reload();
+  await expect(page.locator('.library-item', { hasText: 'to-delete.md' })).toHaveCount(0);
 });

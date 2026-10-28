@@ -1,15 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  AlertCircle, ArrowDownToLine, ArrowRight, BookOpen, Check, CheckCircle2,
-  ChevronRight, Columns2, Copy, FileText, Globe2, Languages, LoaderCircle, Menu, MessageSquareText,
-  Pause, Pencil, Plus, Printer, RefreshCw, Settings2, ShieldCheck, Upload, X,
+  AlertCircle, ArrowDownToLine, Check, Columns2, Copy, FileText, Globe2, Languages, LoaderCircle,
+  Menu, MessageSquareText, Pencil, Plus, Printer, RefreshCw, Trash2, Upload, X,
 } from 'lucide-react';
 import {
-  type DocumentBlock, type DocumentResponse, type Health, type ReadingDocument,
-  type TranslationJob, isAborted, jsonOptions, readRecentIds,
+  type DocumentBlock, type DocumentResponse, type DocumentSummary, type Health, type ReadingDocument,
+  type TranslationJob, MAX_UPLOAD_BYTES, isAborted, jsonOptions, readRecentIds,
   request, wait, writeRecentIds,
 } from './api';
-import { I18nProvider, LocalizedError, type UiMessage, showMessage, uiError, useI18n } from './i18n';
+import { I18nProvider, LocalizedError, type TranslationKey, type UiMessage, showMessage, uiError, useI18n } from './i18n';
 import { buildAgentPrompt, type AgentPromptKind } from './agent-prompts';
 import { readReaderLink } from './reader-links';
 
@@ -21,15 +20,20 @@ const LANGUAGES = [
 type Mode = 'bilingual' | 'translated' | 'source';
 type Panel = 'settings' | 'extension' | 'document-agent' | null;
 
+const PROVIDER_NAMES: Record<string, TranslationKey> = {
+  codex: 'codexTranslation', ollama: 'localTranslation', 'google-free': 'googleFreeTranslation', google: 'googleTranslation', demo: 'demoProvider',
+};
 const languageName = (value: string) => LANGUAGES.find(([code]) => code === value)?.[1] ?? value;
 const isRunning = (job: TranslationJob | null) => !!job && ['queued', 'running'].includes(job.status);
+const summarize = ({ id, name, format, pageCount, blocks, createdAt }: ReadingDocument): DocumentSummary => ({ id, name, format, pageCount, blockCount: blocks.length, createdAt });
+const documentPath = (id: string, language: string) => `/api/documents/${encodeURIComponent(id)}?targetLanguage=${encodeURIComponent(language)}`;
 
 function ReaderApp() {
   const { locale, setLocale, t } = useI18n();
   const [initialLink] = useState(() => readReaderLink(window.location.search));
   const [health, setHealth] = useState<Health | null>(null);
   const [healthLoading, setHealthLoading] = useState(true);
-  const [recent, setRecent] = useState<ReadingDocument[]>([]);
+  const [library, setLibrary] = useState<DocumentSummary[]>([]);
   const [document, setDocument] = useState<ReadingDocument | null>(null);
   const [units, setUnits] = useState<Record<string, string>>({});
   const [target, setTarget] = useState(initialLink.targetLanguage);
@@ -44,6 +48,7 @@ function ReaderApp() {
   const [mobileSidebar, setMobileSidebar] = useState(false);
   const [exporting, setExporting] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const dialog = useRef<HTMLElement>(null);
   const epoch = useRef(0);
   const actionController = useRef<AbortController | null>(null);
   const activeJob = useRef<string | null>(null);
@@ -66,23 +71,27 @@ function ReaderApp() {
     void refreshHealth();
     const controller = new AbortController();
     const generation = epoch.current;
-    if (initialLink.requestedDocument && !initialLink.invalid) setBusy('load');
+    const requested = initialLink.requestedDocument && !initialLink.invalid ? initialLink.documentId : undefined;
+    if (requested || (!initialLink.requestedDocument && !initialLink.invalid && readRecentIds().length)) setBusy('load');
     void (async () => {
-      const ids = [...new Set([...(initialLink.documentId && !initialLink.invalid ? [initialLink.documentId] : []), ...readRecentIds()])];
-      const responses = await Promise.all(ids.map(async (id) => {
-        try { return await request<DocumentResponse>(`/api/documents/${encodeURIComponent(id)}?targetLanguage=${encodeURIComponent(initialLink.targetLanguage)}`, { signal: controller.signal }); }
-        catch { return null; }
-      }));
+      let documents: DocumentSummary[] = [];
+      try { documents = (await request<{ documents: DocumentSummary[] }>('/api/documents', { signal: controller.signal })).documents; }
+      catch { /* An offline server leaves the library empty; the banner explains why. */ }
       if (controller.signal.aborted || generation !== epoch.current) return;
-      const found = responses.filter((value): value is DocumentResponse => !!value);
-      setRecent(found.map((value) => value.document));
-      const selected = initialLink.invalid ? undefined : initialLink.requestedDocument ? found.find((value) => value.document.id === initialLink.documentId) : found[0];
-      if (selected) {
-        setDocument(selected.document);
-        setUnits(selected.translations?.targetLanguage === initialLink.targetLanguage ? selected.translations.units : {});
-        writeRecentIds([selected.document.id, ...found.map((value) => value.document.id)]);
-      } else if (initialLink.requestedDocument && !initialLink.invalid) {
-        setError({ key: 'documentLinkUnavailable' });
+      setLibrary(documents);
+      // A link that names a document never silently falls back to a different one.
+      const id = initialLink.requestedDocument || initialLink.invalid ? requested : readRecentIds().find((recent) => documents.some((item) => item.id === recent));
+      if (id) {
+        try {
+          const response = await request<DocumentResponse>(documentPath(id, initialLink.targetLanguage), { signal: controller.signal });
+          if (controller.signal.aborted || generation !== epoch.current) return;
+          setDocument(response.document);
+          setUnits(response.translations?.targetLanguage === initialLink.targetLanguage ? response.translations.units : {});
+          writeRecentIds([id, ...readRecentIds()]);
+        } catch {
+          if (controller.signal.aborted || generation !== epoch.current) return;
+          if (requested) setError({ key: 'documentLinkUnavailable' });
+        }
       }
       setBusy(null);
     })();
@@ -101,19 +110,27 @@ function ReaderApp() {
     globalThis.document.title = document ? `${document.name} · ${t('appName')}` : t('appName');
   }, [document, t]);
 
+  // Modal: focus moves in, Tab stays inside, Escape closes, focus returns to the opener.
   useEffect(() => {
     if (!panel) return;
-    const handleEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setPanel(null); };
-    window.addEventListener('keydown', handleEscape);
-    return () => window.removeEventListener('keydown', handleEscape);
+    const opener = globalThis.document.activeElement as HTMLElement | null;
+    dialog.current?.focus();
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { setPanel(null); return; }
+      if (event.key !== 'Tab' || !dialog.current) return;
+      const focusable = [...dialog.current.querySelectorAll<HTMLElement>('button, a[href], summary, textarea, select, input')].filter((element) => !element.hasAttribute('disabled') && element.offsetParent !== null);
+      if (!focusable.length) return;
+      const first = focusable[0], last = focusable[focusable.length - 1];
+      if (event.shiftKey && (globalThis.document.activeElement === first || globalThis.document.activeElement === dialog.current)) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && globalThis.document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    window.addEventListener('keydown', handleKey);
+    return () => { window.removeEventListener('keydown', handleKey); opener?.focus?.(); };
   }, [panel]);
 
   function remember(next: ReadingDocument) {
-    setRecent((previous) => {
-      const list = [next, ...previous.filter((item) => item.id !== next.id)].slice(0, 12);
-      writeRecentIds(list.map((item) => item.id));
-      return list;
-    });
+    setLibrary((previous) => previous.some((item) => item.id === next.id) ? previous : [summarize(next), ...previous]);
+    writeRecentIds([next.id, ...readRecentIds()]);
   }
 
   async function cancelPrevious() {
@@ -130,7 +147,7 @@ function ReaderApp() {
     void cancelPrevious();
     setBusy('load'); setError(''); setNotice(''); setJob(null); setOriginal(false); setMobileSidebar(false);
     try {
-      const response = await request<DocumentResponse>(`/api/documents/${encodeURIComponent(id)}?targetLanguage=${encodeURIComponent(language)}`, { signal });
+      const response = await request<DocumentResponse>(documentPath(id, language), { signal });
       if (generation !== epoch.current) return;
       setDocument(response.document);
       setUnits(response.translations?.targetLanguage === language ? response.translations.units : {});
@@ -140,14 +157,33 @@ function ReaderApp() {
     } finally { if (generation === epoch.current) setBusy(null); }
   }
 
+  async function removeDocument(item: DocumentSummary) {
+    if (!window.confirm(t('confirmDelete', { name: item.name }))) return;
+    const current = document?.id === item.id;
+    if (current) { beginAction(); await cancelPrevious(); }
+    try {
+      await request(`/api/documents/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
+    } catch (caught) {
+      // Already gone on the server: still remove the stale entry here.
+      if (!(caught instanceof Error && /not found/i.test(caught.message))) { setError(uiError(caught)); return; }
+    }
+    setLibrary((previous) => previous.filter((entry) => entry.id !== item.id));
+    writeRecentIds(readRecentIds().filter((id) => id !== item.id));
+    if (current) {
+      setDocument(null); setUnits({}); setJob(null); setOriginal(false); setBusy(null); setNotice('');
+      const url = new URL(window.location.href);
+      url.searchParams.delete('document'); url.searchParams.delete('targetLanguage');
+      window.history.replaceState(window.history.state, '', url);
+    }
+  }
+
   async function upload(file?: File) {
     if (!file) return;
-    if (!/\.(pdf|txt|md|markdown|html?|docx)$/i.test(file.name)) {
-      setError({ key: 'invalidDocument' }); return;
-    }
+    if (!/\.(pdf|txt|md|markdown|html?|docx)$/i.test(file.name)) { setError({ key: 'invalidDocument' }); return; }
+    if (file.size > MAX_UPLOAD_BYTES) { setError({ key: 'fileTooLarge' }); return; }
     const { generation, signal } = beginAction();
     void cancelPrevious();
-    setBusy('upload'); setError(''); setNotice(''); setJob(null); setOriginal(false);
+    setBusy('upload'); setError(''); setNotice(''); setJob(null); setOriginal(false); setMobileSidebar(false);
     try {
       const response = await request<DocumentResponse>('/api/documents', {
         method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-File-Name': encodeURIComponent(file.name) },
@@ -155,7 +191,6 @@ function ReaderApp() {
       });
       if (generation !== epoch.current) return;
       setDocument(response.document); setUnits({}); remember(response.document); setMode('bilingual');
-      setNotice({ key: 'importedNotice' });
       void refreshHealth();
     } catch (caught) {
       if (!isAborted(caught) && generation === epoch.current) setError(uiError(caught));
@@ -179,15 +214,21 @@ function ReaderApp() {
         return;
       }
       activeJob.current = started.jobId;
+      let fetched = -1;
       while (!signal.aborted && generation === epoch.current) {
         const next = await request<TranslationJob>(`/api/jobs/${encodeURIComponent(started.jobId)}`, { signal });
         if (generation !== epoch.current) return;
         setJob(next);
-        // Fetch partial results as well: a failed paragraph must not hide successful ones.
-        const response = await request<DocumentResponse>(`/api/documents/${encodeURIComponent(currentDocument.id)}?targetLanguage=${encodeURIComponent(currentTarget)}`, { signal });
-        if (generation !== epoch.current) return;
-        if (response.translations?.targetLanguage === currentTarget) setUnits(response.translations.units);
-        if (!['queued', 'running'].includes(next.status)) {
+        const finished = !['queued', 'running'].includes(next.status);
+        // Partial results matter (a failed paragraph must not hide successful ones),
+        // but the document is only refetched when progress actually moved.
+        if (finished || next.completed !== fetched) {
+          fetched = next.completed;
+          const response = await request<DocumentResponse>(documentPath(currentDocument.id, currentTarget), { signal });
+          if (generation !== epoch.current) return;
+          if (response.translations?.targetLanguage === currentTarget) setUnits(response.translations.units);
+        }
+        if (finished) {
           activeJob.current = null;
           if (next.status === 'completed') setNotice({ key: 'completedNotice' });
           else if (next.status === 'failed') setError(next.error ? { raw: next.error } : { key: 'partialTranslationError' });
@@ -213,7 +254,7 @@ function ReaderApp() {
     setNotice({ key: 'stoppedNotice' });
     if (document) {
       try {
-        const response = await request<DocumentResponse>(`/api/documents/${encodeURIComponent(document.id)}?targetLanguage=${encodeURIComponent(target)}`, { signal });
+        const response = await request<DocumentResponse>(documentPath(document.id, target), { signal });
         if (generation === epoch.current && response.translations?.targetLanguage === target) setUnits(response.translations.units);
       } catch { /* Keep the last successful snapshot visible. */ }
     }
@@ -248,142 +289,147 @@ function ReaderApp() {
     finally { setExporting(false); }
   }
 
+  const openPanel = (next: Panel) => { setPanel(next); setMobileSidebar(false); };
   const translatedCount = document?.blocks.filter((block) => block.type !== 'code' && Object.hasOwn(units, block.id)).length ?? 0;
   const totalCount = document?.blocks.filter((block) => block.type !== 'code').length ?? 0;
   const running = isRunning(job);
   const progress = job?.total ? Math.min(100, Math.round(job.completed / job.total * 100)) : 0;
   const offline = !health && !healthLoading;
   const demo = health?.provider.kind === 'demo';
+  const providerName = health ? PROVIDER_NAMES[health.provider.kind] ? t(PROVIDER_NAMES[health.provider.kind]) : health.provider.kind : '';
 
   return (
     <div className="app-shell">
       <input ref={fileInput} className="visually-hidden" type="file" accept=".pdf,.txt,.md,.markdown,.html,.htm,.docx" aria-label={t('importDocument')} onChange={(event) => void upload(event.target.files?.[0])} />
       {mobileSidebar && <button className="sidebar-scrim" aria-label={t('closeLibrary')} onClick={() => setMobileSidebar(false)} />}
       <aside className={`sidebar ${mobileSidebar ? 'is-open' : ''}`}>
-        <a className="brand" href="/" aria-label={t('home')}>
-          <span className="brand-mark"><BookOpen size={23} strokeWidth={1.8} /></span>
-          <span>open<span className="brand-second">immersive</span></span>
-          <span className="brand-dot" />
-        </a>
-        <div className="workspace-label">{t('yourWorkspace')} <span>01</span></div>
-        <button className="nav-item active" onClick={() => setMobileSidebar(false)}><FileText size={17} /><span>{t('documentTranslation')}</span><ChevronRight size={14} /></button>
-        <button className="nav-item" onClick={() => { setPanel('extension'); setMobileSidebar(false); }}><Globe2 size={17} /><span>{t('websiteTranslation')}</span><span className="tiny-tag">{t('extensionShort')}</span></button>
-        <div className="library-heading"><span>{t('library')}</span><span>{recent.length.toString().padStart(2, '0')}</span></div>
-        <button className="import-button" onClick={() => fileInput.current?.click()} disabled={!!busy}><Plus size={17} />{t('importDocument')}</button>
-        <div className="library-list">
-          {recent.length === 0 ? <div className="library-empty"><FileText size={26} strokeWidth={1.1} /><p>{t('libraryEmptyFirst')}<br />{t('libraryEmptySecond')}</p></div> : recent.map((item) => (
-            <button key={item.id} className={`library-item ${document?.id === item.id ? 'selected' : ''}`} onClick={() => void selectDocument(item.id)} disabled={busy === 'upload'}>
-              <span className="file-mini"><FileText size={17} /></span><span><strong>{item.name}</strong><small>{item.format.toUpperCase()} · {t('blocks', { count: item.blocks.length })}</small></span>
-            </button>
+        <a className="brand" href="/" aria-label={t('home')}><Languages size={26} strokeWidth={2} /></a>
+        <nav className="nav">
+          <button className="nav-item active" aria-current="page" onClick={() => setMobileSidebar(false)}><FileText size={22} /><span>{t('documents')}</span></button>
+          <button className="nav-item" onClick={() => openPanel('extension')}><Globe2 size={22} /><span>{t('websiteTranslation')}</span></button>
+        </nav>
+        <div className="library-heading">
+          <span>{t('library')}</span>
+          <button className="icon-button" aria-label={t('newDocument')} title={t('newDocument')} onClick={() => fileInput.current?.click()} disabled={busy === 'upload'}><Plus size={18} /></button>
+        </div>
+        <ul className="library-list">
+          {library.map((item) => (
+            <li key={item.id} className={`library-item ${document?.id === item.id ? 'selected' : ''}`}>
+              <button className="library-open" onClick={() => void selectDocument(item.id)} disabled={busy === 'upload'} aria-current={document?.id === item.id ? 'true' : undefined}>
+                <strong>{item.name}</strong>
+                <small>{item.format.toUpperCase()}{item.pageCount ? ` · ${t('pages', { count: item.pageCount })}` : ''}</small>
+              </button>
+              <button className="icon-button library-delete" aria-label={t('deleteDocument', { name: item.name })} title={t('deleteDocument', { name: item.name })} onClick={() => void removeDocument(item)}><Trash2 size={15} /></button>
+            </li>
           ))}
-        </div>
-        <div className="sidebar-bottom">
-          <button className="provider-card" onClick={() => setPanel('settings')}>
-            <span className={`status-dot ${offline ? 'offline' : demo ? 'demo' : ''}`} />
-            <span><strong>{healthLoading ? t('connecting') : offline ? t('serverOffline') : demo ? t('demoProvider') : health?.provider.kind === 'codex' ? t('codexTranslation') : health?.provider.kind === 'ollama' ? t('localTranslation') : health?.provider.kind === 'google-free' ? t('googleFreeTranslation') : health?.provider.kind === 'google' ? t('googleTranslation') : t('yourProvider')}</strong><small>{health?.provider.model || t('configureBackend')}</small></span>
-            <Settings2 size={15} />
-          </button>
-          <div className="sidebar-foot"><span>{t('openPossibilities')}</span><span>v{health?.version ?? '0.1.0'}</span></div>
-        </div>
+        </ul>
+        <button className="provider-card" onClick={() => openPanel('settings')} title={t('translationSettings')}>
+          <span className={`status-dot ${offline ? 'offline' : demo || (health && !health.provider.configured) ? 'warning' : healthLoading ? '' : 'online'}`} />
+          <span><strong>{healthLoading ? t('connecting') : offline ? t('serverOffline') : providerName}</strong>{health?.provider.model && <small>{health.provider.model}</small>}</span>
+        </button>
       </aside>
 
       <main className="main-workspace">
-        <header className="topbar">
-          <div className="breadcrumbs"><button className="icon-button mobile-menu" aria-label={t('openLibrary')} onClick={() => setMobileSidebar(true)}><Menu size={20} /></button><span>{t('workspace')}</span><ChevronRight size={13} /><strong>{t('documents')}</strong></div>
-          <div className="topbar-right"><div className="language-switch" role="group" aria-label={t('interfaceLanguage')}><button type="button" data-testid="ui-language-zh" aria-pressed={locale === 'zh'} lang="zh-CN" onClick={() => setLocale('zh')}>中</button><button type="button" data-testid="ui-language-en" aria-pressed={locale === 'en'} lang="en" onClick={() => setLocale('en')}>EN</button></div><button className="icon-button" aria-label={t('translationSettings')} onClick={() => setPanel('settings')}><Settings2 size={18} /></button><span className="avatar" aria-label={t('localWorkspace')}>O</span></div>
+        <header className="topbar page-heading">
+          <button className="icon-button mobile-menu" aria-label={t('openLibrary')} onClick={() => setMobileSidebar(true)}><Menu size={20} /></button>
+          <h1>{t('documents')}</h1>
+          <div className="topbar-right">
+            <button className="button outline agent-document-button" aria-label={t('useYourAgent')} onClick={() => setPanel('document-agent')}><MessageSquareText size={16} /><span>{t('useYourAgent')}</span></button>
+            <div className="language-switch" role="group" aria-label={t('interfaceLanguage')}>
+              <button type="button" data-testid="ui-language-zh" aria-pressed={locale === 'zh'} lang="zh-CN" onClick={() => setLocale('zh')}>中</button>
+              <button type="button" data-testid="ui-language-en" aria-pressed={locale === 'en'} lang="en" onClick={() => setLocale('en')}>EN</button>
+            </div>
+          </div>
         </header>
 
         <div className="workspace-content">
-          <div className="page-heading">
-            <div><h1>{t('documentTranslation')}<span>.</span></h1><p>{t('documentSubtitle')}</p></div>
-            <div className="page-actions"><button className="button secondary agent-document-button" onClick={() => setPanel('document-agent')}><MessageSquareText size={16} />{t('useYourAgent')}</button>{document && <button className="button secondary new-document" onClick={() => fileInput.current?.click()} disabled={!!busy}><Plus size={16} />{t('newDocument')}</button>}</div>
-          </div>
-
-          {offline && <div className="message warning"><AlertCircle size={18} /><div><strong>{t('serverOfflineTitle')}</strong><span>{t('agentSetupDescription')}</span></div><button className="text-button" onClick={() => void refreshHealth()}><RefreshCw size={14} />{t('reconnect')}</button></div>}
-          {demo && <div className="message warning"><AlertCircle size={18} /><div><strong>{t('demoTitle')}</strong><span>{t('demoDescription')}</span></div><button className="text-button" onClick={() => setPanel('settings')}>{t('setupProvider')}</button></div>}
-          {error && <div className="message error" role="alert"><AlertCircle size={18} /><div><strong>{t('actionFailed')}</strong><span>{showMessage(error, t)}</span></div><button className="icon-button" aria-label={t('dismissError')} onClick={() => setError('')}><X size={16} /></button></div>}
-          {notice && <div className="message success" role="status"><CheckCircle2 size={18} /><div><span>{showMessage(notice, t)}</span></div><button className="icon-button" aria-label={t('dismissNotification')} onClick={() => setNotice('')}><X size={16} /></button></div>}
+          {offline && <div className="message warning"><AlertCircle size={18} /><span>{t('serverOfflineTitle')}</span><button className="text-button" onClick={() => void refreshHealth()}><RefreshCw size={14} />{t('reconnect')}</button></div>}
+          {demo && <div className="message warning"><AlertCircle size={18} /><span>{t('demoTitle')}</span><button className="text-button" onClick={() => setPanel('settings')}>{t('setupProvider')}</button></div>}
+          {error && <div className="message error" role="alert"><AlertCircle size={18} /><span>{showMessage(error, t)}</span><button className="icon-button" aria-label={t('dismissError')} onClick={() => setError('')}><X size={16} /></button></div>}
+          {notice && <div className="message success" role="status"><Check size={18} /><span>{showMessage(notice, t)}</span><button className="icon-button" aria-label={t('dismissNotification')} onClick={() => setNotice('')}><X size={16} /></button></div>}
 
           {!document && !busy ? (
-            <div className="welcome-layout">
-              <section className="upload-card" onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }} onDrop={(event) => { event.preventDefault(); setDragging(false); void upload(event.dataTransfer.files[0]); }}>
-                <div className="upload-card-top"><span className="section-number">{t('importSection')}</span><span className="private-label"><ShieldCheck size={14} />{t('yourFiles')}</span></div>
-                <div className={`dropzone ${dragging ? 'dragging' : ''}`}>
-                  <div className="upload-illustration" aria-hidden="true"><div className="sheet sheet-back" /><div className="sheet sheet-front"><span className="sheet-language">Aa <ArrowRight size={13} /> 文</span><i /><i /><i /><i /><span className="sheet-stamp"><Check size={14} /></span></div><span className="illustration-dot one" /><span className="illustration-dot two" /></div>
-                  <h2>{dragging ? t('dropHere') : t('newPerspective')}</h2>
-                  <p>{t('dropFirst')}<br className="desktop-break" /> {t('dropSecond')}</p>
-                  <button className="button primary" onClick={() => fileInput.current?.click()}><Upload size={17} /> {t('chooseDocument')} <ArrowRight size={16} /></button>
-                  <div className="file-formats"><span>PDF</span><span>DOCX</span><span>MARKDOWN</span><span>TXT</span><span>HTML</span></div>
-                </div>
-                <div className="upload-card-bottom"><span><span className="mini-dot" />{t('originalYours')}</span><span>{t('pdfSupport')}</span></div>
-              </section>
-              <section className="intro-notes">
-                <span className="note-label">{t('betterReading')}</span><h2>{t('moreThanWords')}<br /><em>{t('wholePicture')}</em></h2><p>{t('readingDescription')}</p>
-                <div className="feature-note"><span><Columns2 size={18} /></span><div><h3>{t('sideBySide')}</h3><p>{t('sideBySideDescription')}</p></div></div>
-                <div className="feature-note"><span><Pencil size={18} /></span><div><h3>{t('readYourWay')}</h3><p>{t('editDescription')}</p></div></div>
-                <div className="feature-note"><span><ShieldCheck size={18} /></span><div><h3>{t('providerChoice')}</h3><p>{t('providerChoiceDescription')}</p></div></div>
-              </section>
-            </div>
+            <section className={`dropzone ${dragging ? 'dragging' : ''}`} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDragging(false); }} onDrop={(event) => { event.preventDefault(); setDragging(false); void upload(event.dataTransfer.files[0]); }}>
+              <Upload size={28} strokeWidth={1.6} aria-hidden="true" />
+              <h2>{dragging ? t('dropHere') : t('dropDocument')}</h2>
+              <button className="button primary" onClick={() => fileInput.current?.click()}>{t('chooseDocument')}</button>
+              <p>{t('supportedFormats')}</p>
+            </section>
           ) : busy ? (
-            <section className="loading-card" role="status"><LoaderCircle className="spin" size={32} /><h2>{busy === 'upload' ? t('preparingDocument') : t('openingDocument')}</h2><p>{busy === 'upload' ? t('extractingSource') : t('restoringDocument')}</p><span>{t('longerPdf')}</span></section>
+            <section className="loading-card" role="status"><LoaderCircle className="spin" size={28} /><span>{busy === 'upload' ? t('preparingDocument') : t('openingDocument')}</span></section>
           ) : document && (
             <section className="reader-card">
-              <div className="document-toolbar"><div className="document-title"><span className="file-icon"><FileText size={22} /></span><div><h2 title={document.name}>{document.name}</h2><p>{document.format.toUpperCase()}{document.pageCount ? ` · ${t('pages', { count: document.pageCount })}` : ''} · {t('readingBlocks', { count: totalCount })}<span className="dot-separator">·</span><span>{t('translatedCount', { completed: translatedCount, total: totalCount })}</span></p></div></div><span className={`document-status ${translatedCount === totalCount && totalCount > 0 ? 'complete' : ''}`}>{running ? <><LoaderCircle size={12} className="spin" />{t('translating')}</> : translatedCount === totalCount && totalCount > 0 ? <><Check size={12} />{t('translated')}</> : <><span />{t('readyToRead')}</>}</span></div>
-              <div className="translation-toolbar"><div className="language-group"><Languages size={17} /><span className="source-language">{t('autoDetect')}</span><ArrowRight size={14} /><label className="language-select"><span className="visually-hidden">{t('targetLanguage')}</span><select aria-label={t('targetLanguage')} value={target} disabled={!!busy || running} onChange={(event) => { const next = event.target.value; setTarget(next); setUnits({}); void selectDocument(document.id, next); }}>{!LANGUAGES.some(([code]) => code === target) && <option value={target}>{target}</option>}{LANGUAGES.map(([code, label]) => <option key={code} value={code}>{label}</option>)}</select></label></div><div className="toolbar-actions">{document.format.toLowerCase() === 'pdf' && <button className={`button small subtle original-toggle ${original ? 'selected' : ''}`} onClick={() => setOriginal(!original)}><Columns2 size={15} />{t('originalPdf')}</button>}{running ? <button className="button small secondary" onClick={() => void stop()}><Pause size={15} />{t('stop')}</button> : <button className="button small primary" onClick={() => void translate()} disabled={offline || !health?.provider.configured || totalCount === 0}><Languages size={15} />{translatedCount > 0 ? t('translateAgain') : t('translateDocument')}</button>}</div></div>
-              {running && <div className="translation-progress" role="status"><div><span><LoaderCircle className="spin" size={14} /> {t('translatingTo', { language: languageName(target) })}</span><strong>{job?.completed ?? 0} / {job?.total ?? totalCount}<span>{progress}%</span></strong></div><div className="progress-track"><div style={{ width: `${progress}%` }} /></div></div>}
-              {document.warnings.length > 0 && <details className="document-warnings"><summary><AlertCircle size={14} /> {t('documentNotes', { count: document.warnings.length })}</summary><ul>{document.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></details>}
-              <div className="view-toolbar"><div className="segmented-control" aria-label={t('readingMode')}>{([['bilingual', 'bilingual'], ['translated', 'translation'], ['source', 'source']] as const).map(([value, label]) => <button key={value} className={mode === value ? 'selected' : ''} onClick={() => setMode(value)}>{t(label)}</button>)}</div><div className="export-actions"><button className="text-button" disabled={exporting || running || translatedCount === 0} onClick={() => void download('md')}><ArrowDownToLine size={14} /> Markdown</button><button className="text-button" disabled={exporting || running || translatedCount === 0} onClick={() => void download('html')}><ArrowDownToLine size={14} /> HTML</button><button className="text-button" disabled={running} onClick={() => window.print()}><Printer size={14} />{t('pdfPrint')}</button></div></div>
+              <div className="document-toolbar">
+                <div className="document-title">
+                  <h2 title={document.name}>{document.name}</h2>
+                  <p>{document.format.toUpperCase()}{document.pageCount ? ` · ${t('pages', { count: document.pageCount })}` : ''} · {t('translatedCount', { completed: translatedCount, total: totalCount })}</p>
+                </div>
+                {running
+                  ? <button className="button primary" onClick={() => void stop()}>{t('stop')}</button>
+                  : <button className="button primary" onClick={() => void translate()} disabled={offline || !health?.provider.configured || totalCount === 0}>{translatedCount > 0 ? t('translateAgain') : t('translateDocument')}</button>}
+              </div>
+              <div className="translation-toolbar">
+                <div className="language-group">
+                  <select aria-label={t('targetLanguage')} value={target} disabled={!!busy || running} onChange={(event) => { const next = event.target.value; setTarget(next); setUnits({}); void selectDocument(document.id, next); }}>
+                    {!LANGUAGES.some(([code]) => code === target) && <option value={target}>{target}</option>}
+                    {LANGUAGES.map(([code, label]) => <option key={code} value={code}>{label}</option>)}
+                  </select>
+                  <div className="segmented-control" role="group" aria-label={t('readingMode')}>{([['bilingual', 'bilingual'], ['translated', 'translation'], ['source', 'source']] as const).map(([value, label]) => <button key={value} className={mode === value ? 'selected' : ''} aria-pressed={mode === value} onClick={() => setMode(value)}>{t(label)}</button>)}</div>
+                </div>
+                <div className="toolbar-actions">
+                  {document.format.toLowerCase() === 'pdf' && <button className={`icon-button original-toggle ${original ? 'selected' : ''}`} aria-pressed={original} aria-label={t('originalPdf')} title={t('originalPdf')} onClick={() => setOriginal(!original)}><Columns2 size={17} /></button>}
+                  <button className="text-button" disabled={exporting || running || translatedCount === 0} onClick={() => void download('md')}><ArrowDownToLine size={15} />Markdown</button>
+                  <button className="text-button" disabled={exporting || running || translatedCount === 0} onClick={() => void download('html')}><ArrowDownToLine size={15} />HTML</button>
+                  <button className="icon-button" disabled={running} aria-label={t('pdfPrint')} title={t('pdfPrint')} onClick={() => window.print()}><Printer size={17} /></button>
+                </div>
+              </div>
+              {running && <div className="translation-progress" role="status" aria-label={t('translatingTo', { language: languageName(target) })}><div className="progress-track"><div style={{ width: `${progress}%` }} /></div><span>{job?.completed ?? 0} / {job?.total ?? totalCount}</span></div>}
+              {document.warnings.length > 0 && <details className="document-warnings"><summary>{t('documentNotes', { count: document.warnings.length })}</summary><ul>{document.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></details>}
               <div className={`reading-layout ${original ? 'with-original' : ''}`}>
-                {original && <div className="original-preview"><iframe title={t('originalTitle', { name: document.name })} src={`/api/documents/${encodeURIComponent(document.id)}/source`} /><p>{t('originalPreviewNote')}</p></div>}
+                {original && <div className="original-preview"><iframe title={t('originalTitle', { name: document.name })} src={`/api/documents/${encodeURIComponent(document.id)}/source`} /></div>}
                 <article className={`paper mode-${mode}`} lang={mode === 'translated' ? target : 'und'}>
-                  <div className="print-title"><h1>{document.name}</h1><p>{t('appName')} · {languageName(target)}</p></div>
-                  {document.blocks.length === 0 ? <div className="no-text"><AlertCircle size={28} /><h3>{t('noReadableText')}</h3><p>{t('needsOcr')}</p></div> : document.blocks.map((block, index) => <ReadingBlock key={block.id} block={block} translation={units[block.id]} mode={mode} language={target} index={index} editable={!running} onSave={(text) => saveUnit(block.id, text)} />)}
-                  <footer className="paper-footer"><span>{t('endDocument')}</span><span>{t('blocks', { count: document.blocks.length })} · {document.pageCount ? t('sourcePages', { count: document.pageCount }) : document.format.toUpperCase()}</span></footer>
+                  <div className="print-title"><h1>{document.name}</h1><p>{languageName(target)}</p></div>
+                  {document.blocks.length === 0 ? <div className="no-text"><h3>{t('noReadableText')}</h3><p>{t('needsOcr')}</p></div> : document.blocks.map((block, index) => <ReadingBlock key={block.id} block={block} translation={units[block.id]} mode={mode} language={target} index={index} editable={!running} onSave={(text) => saveUnit(block.id, text)} />)}
                 </article>
               </div>
-              <div className="reader-bottom"><span><ShieldCheck size={13} />{t('savedSeparately')}</span><span>{t('reflowView')} <span className="dot-separator">·</span>{t('printDifferent')}</span></div>
             </section>
           )}
-
-          <footer className="workspace-footer"><span>{t('readFreely')}</span><span>{t('builtOpen')} <span>↗</span></span></footer>
         </div>
       </main>
 
       {panel && <div className="modal-backdrop" onClick={() => setPanel(null)}>
-        <section className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-heading" onClick={(event) => event.stopPropagation()}>
-          <div className="modal-heading"><span className="modal-symbol">{panel === 'settings' ? <Settings2 size={23} /> : panel === 'extension' ? <Globe2 size={23} /> : <MessageSquareText size={23} />}</span><button className="icon-button" aria-label={t('closeDialog')} onClick={() => setPanel(null)}><X size={19} /></button></div>
+        <section ref={dialog} tabIndex={-1} className="settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-heading" onClick={(event) => event.stopPropagation()}>
+          <div className="modal-heading">
+            <h2 id="settings-heading">{t(panel === 'settings' ? 'ownProvider' : panel === 'extension' ? 'translateWeb' : 'agentDocumentTitle')}</h2>
+            <button className="icon-button" aria-label={t('closeDialog')} onClick={() => setPanel(null)}><X size={19} /></button>
+          </div>
           {panel === 'settings' ? <>
-            <span className="eyebrow">{t('yourEngine')}</span><h2 id="settings-heading">{t('ownProvider')}</h2><p>{t('providerServerNote')}</p>
+            <div className="settings-status"><span className={`status-dot ${offline ? 'offline' : health?.provider.configured ? 'online' : 'warning'}`} /><div><strong>{health ? `${providerName} · ${health.provider.model}` : t('apiNotConnected')}</strong><small>{health ? health.provider.configured ? t('providerConfigured') : t('providerIncomplete') : t('expectedServer')}</small></div><button className="icon-button" aria-label={t('refreshServer')} onClick={() => void refreshHealth()}><RefreshCw size={16} className={healthLoading ? 'spin' : ''} /></button></div>
             <AgentPromptCard kind="provider" />
-            <div className="settings-status"><span className={`status-dot ${offline ? 'offline' : ''}`} /><div><strong>{health ? `${health.provider.kind === 'codex' ? t('codexTranslation') : health.provider.kind === 'google-free' ? t('googleFreeTranslation') : health.provider.kind === 'google' ? t('googleTranslation') : health.provider.kind} / ${health.provider.model}` : t('apiNotConnected')}</strong><small>{health ? health.provider.configured ? t('providerConfigured') : t('providerIncomplete') : t('expectedServer')}</small></div><button className="icon-button" aria-label={t('refreshServer')} onClick={() => void refreshHealth()}><RefreshCw size={16} className={healthLoading ? 'spin' : ''} /></button></div>
             <details className="manual-setup"><summary>{t('manualSetup')}</summary>
-              <h3>{t('googleFreeSetup')}</h3><p className="small-copy">{t('googleFreeDescription')}</p><pre className="setup-code">{'TRANSLATION_PROVIDER=google-free'}</pre>
-              <h3>{t('codexSetup')}</h3><p className="small-copy">{t('codexSetupDescription')}</p><pre className="setup-code">{'TRANSLATION_PROVIDER=codex\nCODEX_MODEL=gpt-6.1-sol\nCODEX_CLI_PATH=/absolute/path/to/codex'}</pre><p className="small-copy">{t('codexEnvNote')}</p><a className="text-button" href="https://learn.chatgpt.com/docs/auth" target="_blank" rel="noopener noreferrer">{t('codexSetupDocs')} ↗</a>
-              <h3>{t('startLocal')}</h3><p className="small-copy">{t('startLocalDescription')}</p><pre className="setup-code">{'ollama pull qwen3.5:2b\nnpm install\nnpm run dev'}</pre><p className="small-copy">{t('localModelNote')}</p>
-              <h3>{t('googleSetup')}</h3><p className="small-copy">{t('googleSetupDescription')}</p><pre className="setup-code">{'TRANSLATION_PROVIDER=google\nGOOGLE_TRANSLATE_API_KEY=your-google-cloud-api-key'}</pre><p className="small-copy">{t('googleEnvNote')}</p><a className="text-button" href="https://docs.cloud.google.com/translate/docs/setup" target="_blank" rel="noopener noreferrer">{t('googleSetupDocs')} ↗</a>
-              <h3>{t('compatibleApi')}</h3><p className="small-copy">{t('compatibleFirst')} <code>.env</code>{t('compatibleSecond')} <code>.env.example</code> {t('compatibleLast')}</p><p className="settings-footnote">{t('parserNote')}</p>
+              <h3>{t('googleFreeSetup')}</h3><p>{t('googleFreeDescription')}</p><pre className="setup-code">{'TRANSLATION_PROVIDER=google-free'}</pre>
+              <h3>{t('codexSetup')}</h3><p>{t('codexSetupDescription')}</p><pre className="setup-code">{'TRANSLATION_PROVIDER=codex\nCODEX_MODEL=gpt-6.1-sol\nCODEX_CLI_PATH=/absolute/path/to/codex'}</pre><p>{t('codexEnvNote')}</p><a className="text-button" href="https://learn.chatgpt.com/docs/auth" target="_blank" rel="noopener noreferrer">{t('codexSetupDocs')} ↗</a>
+              <h3>{t('startLocal')}</h3><p>{t('startLocalDescription')}</p><pre className="setup-code">{'ollama pull qwen3.5:2b\nnpm install\nnpm run dev'}</pre><p>{t('localModelNote')}</p>
+              <h3>{t('googleSetup')}</h3><p>{t('googleSetupDescription')}</p><pre className="setup-code">{'TRANSLATION_PROVIDER=google\nGOOGLE_TRANSLATE_API_KEY=your-google-cloud-api-key'}</pre><p>{t('googleEnvNote')}</p><a className="text-button" href="https://docs.cloud.google.com/translate/docs/setup" target="_blank" rel="noopener noreferrer">{t('googleSetupDocs')} ↗</a>
+              <h3>{t('compatibleApi')}</h3><p>{t('compatibleFirst')} <code>.env</code>{t('compatibleSecond')} <code>.env.example</code> {t('compatibleLast')}</p><p>{t('parserNote')}</p>
             </details>
           </> : panel === 'extension' ? <>
-            <span className="eyebrow">{t('furtherReading')}</span><h2 id="settings-heading">{t('translateWeb')}</h2><p>{t('extensionDescription')}</p>
             <AgentPromptCard kind="website" />
             <details className="manual-setup"><summary>{t('manualSetup')}</summary><ol className="setup-steps">
-              <li><span>1</span><div><strong>{t('buildExtension')}</strong><code>npm run build --workspace @oit/extension</code></div></li>
-              <li><span>2</span><div><strong>{t('loadChrome')}</strong><p>{t('loadChromeFirst')} <code>chrome://extensions</code>{t('loadChromeSecond')} <code>apps/extension/dist</code>{t('loadChromeLast')}</p></div></li>
-              <li><span>3</span><div><strong>{t('chooseAndTranslate')}</strong><p>{t('extensionUse')}</p></div></li>
+              <li><strong>{t('buildExtension')}</strong><code>npm run build --workspace @oit/extension</code></li>
+              <li><strong>{t('loadChrome')}</strong><p>{t('loadChromeFirst')} <code>chrome://extensions</code>{t('loadChromeSecond')} <code>apps/extension/dist</code>{t('loadChromeLast')}</p></li>
+              <li><strong>{t('chooseAndTranslate')}</strong><p>{t('extensionUse')}</p></li>
             </ol></details>
-            <div className="settings-footnote"><ShieldCheck size={15} /><span>{t('extensionPrivacy')}</span></div>
+            <p className="settings-footnote">{t('extensionPrivacy')}</p>
           </> : <>
-            <h2 id="settings-heading">{t('agentDocumentTitle')}</h2><p>{t('agentDocumentDescription')}</p>
             {document && <p className="agent-document-context">{t('agentExistingDocument', { name: document.name, language: languageName(target) })}</p>}
             <ol className="setup-steps agent-document-steps">
-              <li><span>1</span><div><strong>{t(document ? 'agentDocumentStep1Existing' : 'agentDocumentStep1')}</strong></div></li>
-              <li><span>2</span><div><strong>{t('agentDocumentStep2')}</strong></div></li>
-              <li><span>3</span><div><strong>{t('agentDocumentStep3')}</strong></div></li>
+              <li><strong>{t(document ? 'agentDocumentStep1Existing' : 'agentDocumentStep1')}</strong></li>
+              <li><strong>{t('agentDocumentStep2')}</strong></li>
+              <li><strong>{t('agentDocumentStep3')}</strong></li>
             </ol>
             <AgentPromptCard kind="document" document={document} targetLanguage={document ? target : undefined} />
-            <p className="settings-footnote">{t('agentDocumentHow')}</p>
           </>}
-          <button className="button primary modal-done" onClick={() => setPanel(null)}>{t('gotIt')} <Check size={16} /></button>
         </section>
       </div>}
     </div>
@@ -421,9 +467,8 @@ function AgentPromptCard({ kind, document, targetLanguage }: {
   }
 
   return <section className="agent-assist" data-agent-prompt={kind}>
-    {kind !== 'document' && <h3><MessageSquareText size={17} />{t('letAgentSetup')}</h3>}
-    <p>{t(kind === 'document' ? 'agentDocumentPromptDescription' : 'agentSetupDescription')}</p>
-    <button className="button primary agent-copy-button" onClick={() => void copyPrompt()}><Copy size={15} />{t('copyForAgent')}</button>
+    {kind !== 'document' && <h3>{t('letAgentSetup')}</h3>}
+    <button className="button primary agent-copy-button" onClick={() => void copyPrompt()}>{copyState === 'copied' ? <Check size={16} /> : <Copy size={16} />}{t('copyForAgent')}</button>
     {copyState !== 'idle' && <p className={`agent-copy-status ${copyState}`} role="status" aria-live="polite">{t(copyState === 'copied' ? 'promptCopied' : 'promptCopyFallback')}</p>}
     <details className="agent-prompt-preview" open={previewOpen} onToggle={(event) => setPreviewOpen(event.currentTarget.open)}>
       <summary>{t('previewAgentRequest')}</summary>
@@ -455,10 +500,9 @@ function ReadingBlock({ block, translation, mode, language, index, editable, onS
   }
 
   return <section className={`reading-block block-${block.type} ${translated ? 'has-translation' : ''}`} data-block-id={block.id}>
-    <span className="block-number" aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>
     {showSource && <div className={`source-content ${mode === 'bilingual' && translated ? 'muted-source' : ''}`}><BlockContent block={block} text={block.text} />{mode === 'translated' && !translated && !isProtected && <span className="untranslated-note">{t('sourceUntranslated')}</span>}</div>}
-    {isProtected ? <span className="protected-note">{t('codePreserved')}</span> : mode !== 'source' && translated ? <div className="translated-content" lang={language} dir={['ar', 'he', 'fa', 'ur'].includes(language) ? 'rtl' : 'auto'}>
-      {editing ? <><div className="edit-area"><textarea aria-label={t('editBlock', { number: index + 1 })} value={draft} onChange={(event) => setDraft(event.target.value)} rows={Math.min(14, Math.max(3, Math.ceil(draft.length / 75)))} autoFocus /><div className="edit-actions"><button className="button small subtle" onClick={() => { setEditing(false); setDraft(translation); setError(''); }} disabled={saving}>{t('cancel')}</button><button className="button small primary" onClick={() => void save()} disabled={saving || !draft.trim()}>{saving ? <LoaderCircle size={13} className="spin" /> : <Check size={13} />} {t('saveEdit')}</button></div>{error && <p className="edit-error" role="alert">{showMessage(error, t)}</p>}</div><div className="saved-print"><BlockContent block={block} text={translation} /></div></> : <><BlockContent block={block} text={translation} />{canEdit && <button className="edit-block-button" aria-label={t('editBlock', { number: index + 1 })} onClick={() => { setDraft(translation); setEditing(true); }}><Pencil size={13} /></button>}</>}
+    {!isProtected && mode !== 'source' && translated ? <div className="translated-content" lang={language} dir={['ar', 'he', 'fa', 'ur'].includes(language) ? 'rtl' : 'auto'}>
+      {editing ? <><div className="edit-area"><textarea aria-label={t('editBlock', { number: index + 1 })} value={draft} onChange={(event) => setDraft(event.target.value)} rows={Math.min(14, Math.max(3, Math.ceil(draft.length / 75)))} autoFocus /><div className="edit-actions"><button className="button ghost" onClick={() => { setEditing(false); setDraft(translation); setError(''); }} disabled={saving}>{t('cancel')}</button><button className="button primary" onClick={() => void save()} disabled={saving || !draft.trim()}>{saving && <LoaderCircle size={14} className="spin" />}{t('saveEdit')}</button></div>{error && <p className="edit-error" role="alert">{showMessage(error, t)}</p>}</div><div className="saved-print"><BlockContent block={block} text={translation} /></div></> : <><BlockContent block={block} text={translation} />{canEdit && <button className="edit-block-button" aria-label={t('editBlock', { number: index + 1 })} onClick={() => { setDraft(translation); setEditing(true); }}><Pencil size={14} /></button>}</>}
     </div> : null}
   </section>;
 }
