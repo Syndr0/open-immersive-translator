@@ -159,11 +159,27 @@ select { appearance: none; min-height: 36px; padding: 0 34px 0 14px; border: 1px
 .reading-block h4 { font-size: 17px; font-weight: 700; }
 .reading-block.block-heading { margin-top: 40px; margin-bottom: 16px; }
 .reading-block.block-heading:first-of-type { margin-top: 0; }
-.source-content.muted-source { color: var(--text-secondary); }
-.source-content.muted-source p { font-size: 15px; line-height: 1.65; }
-.source-content.muted-source h2, .source-content.muted-source h3, .source-content.muted-source h4 { font-size: 15px; font-weight: 600; }
-.translated-content { position: relative; margin-top: 8px; }
-.mode-translated .translated-content { margin-top: 0; }
+/* Bilingual: the source reads first, its translation sits in a quiet box below. */
+.translated-content { position: relative; }
+.mode-bilingual .translated-content { margin-top: 10px; padding: 12px 16px; border-radius: 12px; background: var(--bg-subtle); }
+.mode-bilingual .translated-content p { font-size: 16px; }
+.mode-bilingual .block-heading .translated-content { display: inline-block; margin-top: 8px; padding: 4px 12px; border-radius: 8px; }
+.mode-bilingual .block-heading .translated-content :is(h2, h3, h4) { font-size: 17px; }
+.mode-bilingual .block-table .translated-content { padding: 0; background: none; }
+.block-list { display: flex; gap: 10px; padding-left: 8px; }
+.list-marker { flex: 0 0 auto; min-width: 1.4em; text-align: right; font-size: 17px; line-height: 1.7; font-variant-numeric: tabular-nums; }
+.list-body { flex: 1; min-width: 0; }
+.block-caption p { font-size: 15px; line-height: 1.6; }
+.mode-bilingual .block-caption .translated-content p { font-size: 15px; }
+.block-footnote p { color: var(--text-secondary); font-size: 13px !important; line-height: 1.5; }
+.block-reference { margin-bottom: 16px; }
+.block-reference p { font-size: 14px !important; line-height: 1.55; }
+.block-figure { margin: 32px 0 12px; text-align: center; }
+.figure-image { display: block; max-width: 100%; height: auto; margin: 0 auto; border-radius: 8px; background: #fff; }
+.math-display { display: block; margin: 8px 0; overflow-x: auto; overflow-y: hidden; text-align: center; }
+.block-formula { margin: 20px 0; }
+.math-inline { white-space: nowrap; }
+.cell-translation { display: block; margin-top: 4px; padding: 2px 6px; border-radius: 6px; background: var(--bg-subtle); color: var(--text); font-size: 13px; }
 .reading-block pre { margin: 0; padding: 14px 16px; overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-subtle); font-family: var(--mono); font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
 .untranslated-note { display: inline-block; margin-top: 6px; color: var(--text-secondary); font-size: 13px; }
 .edit-block-button { position: absolute; top: -4px; right: -42px; display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border: 0; border-radius: 9999px; background: transparent; color: var(--text-secondary); opacity: 0; transition: opacity .15s, background-color .15s; }
@@ -256,14 +272,19 @@ select { appearance: none; min-height: 36px; padding: 0 34px 0 14px; border: 1px
   .reading-block h3 { font-size: 13pt; }
   .reading-block h4 { font-size: 11pt; }
   .reading-block p { color: black; font-size: 10pt; line-height: 1.8; orphans: 3; widows: 3; }
-  .source-content.muted-source, .source-content.muted-source p, .source-content.muted-source h2, .source-content.muted-source h3, .source-content.muted-source h4 { color: #777; font-size: 9pt; }
+  .translated-content, .cell-translation { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .mode-bilingual .translated-content { background: #f0f0f0 !important; border-radius: 3mm; padding: 2.5mm 4mm; }
+  .mode-bilingual .translated-content p { font-size: 9.5pt; }
+  .cell-translation { background: #f0f0f0 !important; }
+  .block-figure, .block-formula, .block-table { break-inside: avoid; }
+  .figure-image { max-height: 120mm; }
+  .list-marker { font-size: 10pt; }
   .reading-block pre { padding: 3mm; border: 1px solid #ddd; background: none; font-size: 8pt; white-space: pre-wrap; overflow-wrap: anywhere; }
   .reading-block table { width: 100%; table-layout: fixed; font-size: 8pt; }
   .reading-block tr { break-inside: avoid; }
   .reading-block td, .reading-block th { padding: 1.5mm; border-color: #ccc; overflow-wrap: anywhere; }
   .reading-block thead { display: table-header-group; }
   .table-scroll { overflow: visible; }
-  .translated-content { margin-top: 2mm; }
   .edit-area { display: none; }
   .saved-print { display: block; }
 }

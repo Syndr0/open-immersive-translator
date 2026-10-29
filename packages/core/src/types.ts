@@ -5,6 +5,8 @@ export interface TranslationRequest {
   segments: Segment[];
   sourceLanguage?: string;
   targetLanguage: string;
+  /** Background for terminology (e.g. a paper's title and abstract); never translated itself. */
+  context?: string;
 }
 export interface TranslationResult extends Segment { cached?: boolean }
 export interface TranslationResponse {
@@ -13,12 +15,19 @@ export interface TranslationResponse {
   provider: string;
   model: string;
 }
+/**
+ * figure: `asset` names a stored image; formula: `text` is LaTeX; table: `text`
+ * is a Markdown pipe table; list: `marker` is the original bullet or number.
+ */
+export type BlockType = 'heading' | 'paragraph' | 'list' | 'caption' | 'reference' | 'footnote' | 'table' | 'code' | 'formula' | 'figure';
 export interface DocumentBlock {
   id: string;
-  type: 'heading' | 'paragraph' | 'code' | 'table';
+  type: BlockType;
   text: string;
   page?: number;
   level?: number;
+  marker?: string;
+  asset?: string;
 }
 export interface SourceDocument {
   id: string;
@@ -49,7 +58,7 @@ export interface Provider {
   cacheNamespace?: string;
   /** Opt in to identified multi-segment calls; maxCharacters must be at least 2. */
   batch?: { maxSegments: number; maxCharacters: number };
-  translate(segments: Segment[], source: string, target: string, signal: AbortSignal): Promise<ProviderResult[]>;
+  translate(segments: Segment[], source: string, target: string, signal: AbortSignal, context?: string): Promise<ProviderResult[]>;
 }
 export interface TranslationCache {
   get(key: string): string | undefined;

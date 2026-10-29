@@ -88,7 +88,7 @@ test('official MCP stdio client can translate an uploaded document with its own 
     assert.equal(join(await realpath(outputs), exported.fileName), exported.path);
     const html = await readFile(exported.path, 'utf8');
     assert.equal(Buffer.byteLength(html), exported.bytes);
-    assert.match(html, /Traduit: Keep \$E=mc\^2\$, `source_code\(\)` and https:\/\/example.com unchanged\./);
+    assert.match(html, /Traduit: Keep <span class="katex"><math[^]*?<annotation encoding="application\/x-tex">E=mc\^2<\/annotation>[^]*?<\/math><\/span>, `source_code\(\)` and https:\/\/example.com unchanged\./);
     assert.match(html, /const keep = 42;/);
     assert.equal(html.includes('⟪OIT_'), false);
     assert.equal(new URL(exported.downloadUrl).origin, base);

@@ -12,9 +12,9 @@ An independent, MIT-licensed implementation of paragraph-based website translati
 - **Documents:** import text PDFs, DOCX, HTML, Markdown and TXT; translate blocks; edit translations; export bilingual HTML/Markdown or print to PDF.
 - **Providers:** free Google web translation without a key, Google Cloud Translation, local Ollama, an installed Codex CLI, or a compatible chat-completion endpoint. Provider credentials stay in the backend environment.
 - **Shared core:** protected code/math/link tokens, identified results, bounded requests, caching and explicit per-segment failures.
-- **Optional recognition:** use a Docling worker for harder PDFs. The default lightweight PDF parser reads existing text; it does not perform OCR.
+- **Papers:** with the Docling worker, PDFs keep their figures (as images), formulas (LaTeX, rendered with KaTeX), tables (each cell translated beside its source), lists, captions, footnotes and references. The built-in parser needs no Python: it recovers headings, lists, captions and references from the text layer, but not figures, formulas or table grids.
 
-This first version produces reflowed documents. It does not preserve the original PDF coordinates or guarantee scientific table/formula recognition. Parser and translation quality depend on the chosen engines. See [architecture and limits](architecture.md).
+Documents are reflowed into a bilingual reading view, not redrawn at the original PDF coordinates. Parser and translation quality depend on the chosen engines; for papers, an LLM provider (Codex or a 7B+ local model) handles terminology better than the free Google endpoint. See [architecture and limits](architecture.md).
 
 ## Start with your agent
 
@@ -116,7 +116,7 @@ The extension installs its control on HTTP/HTTPS pages and requests site access 
 
 ### Optional Docling parser
 
-The Python worker is optional and separate from the Node installation. Follow the [Docling worker setup](../workers/docling/README.md), set `PARSER=docling` and point `DOCLING_PYTHON` at that environment's Python. See [document parsing](architecture.md#document-parsing). Model downloads may be needed on the first run. Code and model licenses are separate; select and pin the models for your deployment.
+The Python worker is optional and separate from the Node installation, but recommended for papers. Follow the [Docling worker setup](../workers/docling/README.md), set `PARSER=docling` and point `DOCLING_PYTHON` at that environment's Python (relative paths resolve from the repository root). See [document parsing](architecture.md#document-parsing). Model downloads may be needed on the first run. Code and model licenses are separate; select and pin the models for your deployment.
 
 ## Develop and verify
 

@@ -81,3 +81,20 @@ test('library lists server documents and deletes the open one after confirmation
   await page.reload();
   await expect(page.locator('.library-item', { hasText: 'to-delete.md' })).toHaveCount(0);
 });
+
+test('papers render math with KaTeX and translate table cells beside their source', async ({ page }) => {
+  await page.goto('/');
+  await page.getByLabel('Import document', { exact: true }).setInputFiles({
+    name: 'paper-elements.md', mimeType: 'text/markdown',
+    buffer: Buffer.from('# Results\n\nEach context has length $k = \\lceil L/l \\rceil$ tokens.\n\n| Model | Context type |\n|---|---|\n| SantaCoder | prior |\n'),
+  });
+  await expect(page.getByRole('heading', { name: 'paper-elements.md' })).toBeVisible();
+  await page.getByRole('button', { name: 'Translate document', exact: true }).click();
+  await expect(page.getByText('Translation complete.', { exact: false })).toBeVisible();
+  await expect(page.locator('.block-paragraph .source-content .katex')).toHaveCount(1);
+  await expect(page.locator('.block-paragraph .translated-content .katex')).toHaveCount(1);
+  const table = page.locator('.block-table table');
+  await expect(table).toHaveCount(1);
+  await expect(table.locator('.cell-translation')).toHaveText(['[Demo · zh-Hans] Model', '[Demo · zh-Hans] Context type', '[Demo · zh-Hans] prior']);
+  await expect(table.locator('td').first()).toHaveText('SantaCoder');
+});
