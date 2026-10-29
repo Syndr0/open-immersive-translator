@@ -82,7 +82,7 @@ export class TranslationBroker {
           signal.throwIfAborted();
           const pending = batch.filter(chunk => !chunk.work.settled);
           if (!pending.length) return;
-          const outputs = await this.provider.translate(pending.map(({ id, text }) => ({ id, text })), request.sourceLanguage ?? 'auto', request.targetLanguage, signal);
+          const outputs = await this.provider.translate(pending.map(({ id, text }) => ({ id, text })), request.sourceLanguage ?? 'auto', request.targetLanguage, signal, request.context);
           signal.throwIfAborted();
           const expected = new Set(pending.map(chunk => chunk.id));
           const byId = new Map<string, ProviderResult>();

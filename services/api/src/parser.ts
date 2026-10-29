@@ -1,10 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { extname, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import type { SourceDocument, DocumentBlock } from '@oit/core';
+import type { SourceDocument, DocumentBlock, BlockType } from '@oit/core';
+import { layoutBlocks, type PdfPage } from './pdf-text.ts';
+import { ASSET_NAME, type DocumentAsset } from './store.ts';
+
+export interface ParsedDocument extends SourceDocument { assets: DocumentAsset[] }
+const BLOCK_TYPES: BlockType[] = ['heading', 'paragraph', 'list', 'caption', 'reference', 'footnote', 'table', 'code', 'formula', 'figure'];
 
 const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 const supported = ['.pdf', '.txt', '.md', '.markdown', '.html', '.htm', '.docx'];
@@ -60,19 +65,19 @@ export function htmlToText(input: string): string {
     });
 }
 
-export async function parseDocument(name: string, input: Buffer, env: NodeJS.ProcessEnv = process.env): Promise<SourceDocument> {
+export async function parseDocument(name: string, input: Buffer, env: NodeJS.ProcessEnv = process.env): Promise<ParsedDocument> {
   const extension = extname(name).toLowerCase();
   if (!supported.includes(extension)) throw new Error('Supported formats: PDF, TXT, Markdown, HTML and DOCX');
   if (!input.length) throw new Error('Document is empty');
   if (input.length > 25 * 1024 * 1024) throw new Error('Document exceeds 25 MB limit');
   let raw: Omit<DocumentBlock, 'id'>[] = [];
+  let assets: DocumentAsset[] = [];
   const warnings: string[] = [];
   let pageCount: number | undefined;
   if (env.PARSER === 'docling' && extension === '.pdf') {
     if (!input.subarray(0, 1024).includes(Buffer.from('%PDF-'))) throw new Error('File does not contain a PDF header');
     const result = await docling(input, env);
-    raw = markdownBlocks(result.markdown); pageCount = result.pageCount;
-    warnings.push('Docling recognition is enabled. This initial adapter keeps text, tables and math markup; embedded figure assets and original geometry are not exported.');
+    raw = result.blocks; pageCount = result.pageCount; assets = result.assets;
   } else if (extension === '.pdf') {
     if (!input.subarray(0, 1024).includes(Buffer.from('%PDF-'))) throw new Error('File does not contain a PDF header');
     const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
@@ -81,30 +86,16 @@ export async function parseDocument(name: string, input: Buffer, env: NodeJS.Pro
     pageCount = pdf.numPages;
     if (pageCount > 300) { await task.destroy(); throw new Error('PDF exceeds 300-page limit'); }
     try {
-      for (let page = 1; page <= pdf.numPages; page++) {
-        const content = await (await pdf.getPage(page)).getTextContent();
-        const lines: string[] = []; let line = '', previousY: number | undefined;
-        for (const item of content.items) {
-          if (!('str' in item)) continue;
-          const y = item.transform[5] as number;
-          if (previousY !== undefined && Math.abs(y - previousY) > Math.max(2, item.height * .4)) { if (line.trim()) lines.push(line.trim()); line = ''; }
-          line += `${line && !/\s$/.test(line) && !/^\s/.test(item.str) ? ' ' : ''}${item.str}`;
-          previousY = y;
-          if (item.hasEOL) { if (line.trim()) lines.push(line.trim()); line = ''; previousY = undefined; }
-        }
-        if (line.trim()) lines.push(line.trim());
-        // Preserve page provenance and bound paragraphs for translation; complex layout needs Docling.
-        let paragraph = '';
-        for (const text of lines) {
-          if (paragraph.length + text.length > 1600 || (paragraph && /[.!?:。！？]$/.test(paragraph) && text.length < 80)) {
-            raw.push({ type: 'paragraph', text: paragraph, page }); paragraph = '';
-          }
-          paragraph += `${paragraph ? '\n' : ''}${text}`;
-        }
-        if (paragraph) raw.push({ type: 'paragraph', text: paragraph, page });
+      const pages: PdfPage[] = [];
+      for (let number = 1; number <= pdf.numPages; number++) {
+        const page = await pdf.getPage(number);
+        const { width, height } = page.getViewport({ scale: 1 });
+        const content = await page.getTextContent();
+        pages.push({ width, height, items: content.items.filter(item => 'str' in item) });
       }
+      raw = layoutBlocks(pages);
     } finally { await task.destroy(); }
-    warnings.push('Basic PDF extraction reads the existing text layer. It does not OCR scans, recover figures or guarantee multi-column reading order. Use the optional Docling adapter for recognition.');
+    warnings.push('Built-in PDF extraction reads the text layer only: figures, formulas and table grids need the Docling parser (PARSER=docling).');
   } else if (extension === '.docx') {
     validateDocxArchive(input);
     const mammoth = await import('mammoth');
@@ -124,19 +115,21 @@ export async function parseDocument(name: string, input: Buffer, env: NodeJS.Pro
   const sourceHash = hash(input);
   return {
     id: randomUUID(), name, format: extension.slice(1), sourceHash, pageCount,
-    blocks: raw.map((block, index) => ({ ...block, id: hash(`${sourceHash}:parser-v1:${env.PARSER || 'basic'}:${index}`).slice(0, 24) })),
-    warnings, createdAt: new Date().toISOString(),
+    blocks: raw.map((block, index) => ({ ...block, id: hash(`${sourceHash}:parser-v2:${env.PARSER || 'basic'}:${index}`).slice(0, 24) })),
+    warnings, createdAt: new Date().toISOString(), assets,
   };
 }
 
-async function docling(input: Buffer, env: NodeJS.ProcessEnv): Promise<{ markdown: string; pageCount?: number }> {
+async function docling(input: Buffer, env: NodeJS.ProcessEnv): Promise<{ blocks: Omit<DocumentBlock, 'id'>[]; pageCount?: number; assets: DocumentAsset[] }> {
   const directory = await mkdtemp(`${tmpdir()}/oit-docling-`);
-  const path = `${directory}/input.pdf`;
+  const path = `${directory}/input.pdf`, assetDirectory = `${directory}/assets`;
   await writeFile(path, input);
+  await mkdir(assetDirectory);
   try {
+    const root = fileURLToPath(new URL('../../../', import.meta.url));
     const worker = fileURLToPath(new URL('../../../workers/docling/parse.py', import.meta.url));
     const output = await new Promise<string>((resolveOutput, reject) => {
-      const child = spawn(env.DOCLING_PYTHON || 'python3', [worker, path], { cwd: fileURLToPath(new URL('../../../', import.meta.url)), stdio: ['ignore', 'pipe', 'pipe'], shell: false });
+      const child = spawn(resolve(root, env.DOCLING_PYTHON || 'python3'), [worker, path, assetDirectory], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
       let stdout = '', stderr = '', finished = false;
       const timeout = setTimeout(() => { finished = true; child.kill('SIGTERM'); reject(new Error('Docling recognition timed out after 10 minutes')); }, 600_000);
       child.stdout.on('data', chunk => { stdout += String(chunk); if (stdout.length > 20_000_000) { child.kill('SIGTERM'); } });
@@ -148,8 +141,22 @@ async function docling(input: Buffer, env: NodeJS.ProcessEnv): Promise<{ markdow
         else resolveOutput(stdout);
       });
     });
-    const parsed = JSON.parse(output) as { markdown?: unknown; pageCount?: number };
-    if (typeof parsed.markdown !== 'string') throw new Error('Docling returned an invalid document');
-    return { markdown: parsed.markdown, pageCount: parsed.pageCount };
+    const parsed = JSON.parse(output) as { blocks?: unknown; pageCount?: number };
+    if (!Array.isArray(parsed.blocks)) throw new Error('Docling returned an invalid document');
+    const names = new Set((await readdir(assetDirectory)).filter(name => ASSET_NAME.test(name)));
+    const blocks: Omit<DocumentBlock, 'id'>[] = [];
+    for (const value of parsed.blocks as Array<Record<string, unknown>>) {
+      const type = value.type as BlockType;
+      if (!BLOCK_TYPES.includes(type) || typeof value.text !== 'string' || value.text.length > 100_000) continue;
+      if (type === 'figure' && !(typeof value.asset === 'string' && names.has(value.asset))) continue;
+      blocks.push({ type, text: value.text,
+        ...(Number.isInteger(value.page) ? { page: value.page as number } : {}),
+        ...(type === 'heading' && Number.isInteger(value.level) ? { level: Math.min(6, Math.max(1, value.level as number)) } : {}),
+        ...(type === 'list' && typeof value.marker === 'string' ? { marker: value.marker.slice(0, 16) } : {}),
+        ...(type === 'figure' ? { asset: value.asset as string } : {}) });
+    }
+    const used = new Set(blocks.flatMap(block => block.asset ? [block.asset] : []));
+    const assets = await Promise.all([...used].map(async name => ({ name, bytes: await readFile(`${assetDirectory}/${name}`) })));
+    return { blocks, pageCount: parsed.pageCount, assets };
   } finally { await rm(directory, { recursive: true, force: true }); }
 }

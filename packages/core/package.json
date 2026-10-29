@@ -3,6 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "exports": "./src/index.ts",
-  "scripts": { "test": "node --import tsx --test test/*.test.ts" }
+  "exports": {
+    ".": "./src/index.ts",
+    "./document": "./src/document.ts"
+  },
+  "scripts": {
+    "test": "node --import tsx --test test/*.test.ts"
+  }
 }

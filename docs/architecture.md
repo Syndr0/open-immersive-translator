@@ -28,9 +28,11 @@ The reader and extension share deliberate, user-triggered setup prompts. The loc
 
 ## Document parsing
 
-Basic parsing supports text-layer PDF, TXT, Markdown, HTML and DOCX. PDF.js provides page text extraction. This is a lightweight reading-order heuristic, not recognition of every table, formula or scientific column. Scanned pages without text need an OCR-capable adapter. HTML is reduced to safe readable content; importing a document does not execute its scripts.
+Documents become typed blocks: `heading`, `paragraph`, `list` (with its marker), `caption`, `footnote`, `reference`, `table` (a Markdown pipe table), `formula` (LaTeX), `figure` (a stored PNG asset) and `code`. Figures, formulas and code are never sent to a provider. Tables are translated cell by cell; cells holding only names, numbers or math are kept. Every provider request for a document carries its title and abstract as terminology context.
 
-The optional Python worker uses Docling's `DocumentConverter` and normalizes Markdown into the same block interface. Install `workers` requirements in a Python environment and configure:
+Basic parsing supports text-layer PDF, TXT, Markdown, HTML and DOCX. For PDFs, a layout pass over PDF.js text positions recovers headings (font size and numbering), two-column reading order, lists, captions, footnotes and one block per reference; it rejoins hyphenated words and paragraphs split by page breaks, and drops page numbers, running headers and rotated margin text. It cannot see figures, formulas or table grids. HTML is reduced to safe readable content; importing a document does not execute its scripts.
+
+The optional Python worker runs Docling with table structure, formula-to-LaTeX enrichment and figure extraction, and emits the same typed blocks plus figure PNGs (formulas it cannot read become images). Pages without a text layer are recognized with OCR. Install `workers` requirements in a Python environment and configure:
 
 ```dotenv
 PARSER=docling
@@ -41,7 +43,7 @@ The worker contract and installation command live beside its source. Parsing mod
 
 ## Export
 
-HTML and Markdown exports escape untrusted text and include explicit source/translation sections according to the selected mode. Browser print uses a document-only stylesheet for a reflowed PDF. It cannot preserve original PDF coordinates. Missing/failed translations remain visible as source or are reported; successful output must not silently imply that every segment was translated.
+HTML and Markdown exports escape untrusted text and include explicit source/translation sections according to the selected mode. Figures are embedded, and HTML formulas are MathML that keeps the LaTeX source. Browser print uses a document-only stylesheet for a reflowed PDF. It cannot preserve original PDF coordinates. Missing/failed translations remain visible as source or are reported; successful output must not silently imply that every segment was translated.
 
 ## Local deployment boundary
 
@@ -49,7 +51,7 @@ The API binds to loopback. Provider credentials come from environment variables 
 
 ## Deliberate future work
 
-- Richer parser-neutral tables, captions, assets, source geometry and equation representations.
+- Source geometry for layout-preserving PDF output.
 - Incremental document revisions and stronger edit-conflict handling.
 - Per-site extraction rules authored independently with regression fixtures.
 - Accessible translation-only display, richer trusted inline reconstruction and frame coordination.

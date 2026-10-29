@@ -5,7 +5,8 @@ import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync } from 'node:fs';
-import { TranslationBroker, protect, restore, type Provider, type TranslationJob } from '@oit/core';
+import { readFile } from 'node:fs/promises';
+import { TranslationBroker, assembleTranslation, documentContext, isTranslatable, protect, restore, translationSegments, type Provider, type TranslationJob } from '@oit/core';
 import { Store } from './store.ts';
 import { parseDocument } from './parser.ts';
 import { providerFromEnv } from './provider.ts';
@@ -94,8 +95,8 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
     let name: string;
     try { name = decodeURIComponent(request.get('X-File-Name') || 'document.txt').split(/[\\/]/).pop()!.replace(/[\x00-\x1f]/g, '').slice(0, 200); }
     catch { response.status(400).json({ error: 'Invalid filename encoding' }); return; }
-    const document = await parseDocument(name, request.body, env);
-    await store.create(document, request.body);
+    const { assets, ...document } = await parseDocument(name, request.body, env);
+    await store.create(document, request.body, assets);
     response.status(201).json({ document });
   });
   app.get('/api/documents', async (_request, response) => { response.json({ documents: await store.list() }); });
@@ -116,7 +117,14 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
     if (!record) { response.status(404).json({ error: 'Document not found' }); return; }
     response.setHeader('Content-Disposition', `${record.document.format === 'pdf' ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(record.document.name)}`);
     response.type(record.document.format === 'pdf' ? 'application/pdf' : 'application/octet-stream');
-    response.sendFile(store.sourcePath(record.document.id));
+    response.sendFile(store.sourcePath(record.document.id), { dotfiles: 'allow' });
+  });
+  app.get('/api/documents/:id/assets/:name', async (request, response) => {
+    const record = await store.load(request.params.id);
+    const path = record && record.document.blocks.some(block => block.asset === request.params.name) ? store.assetPath(record.document.id, request.params.name) : undefined;
+    if (!path) { response.status(404).json({ error: 'Asset not found' }); return; }
+    // Cache headers go only on a served file, never on an error a browser would then keep.
+    response.type('image/png').sendFile(path, { dotfiles: 'allow', cacheControl: false, headers: { 'Cache-Control': 'private, max-age=31536000, immutable' } });
   });
   app.post('/api/documents/:id/translate', async (request, response) => {
     const record = await store.load(request.params.id);
@@ -126,7 +134,8 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
     activeTranslations.get(translationKey)?.abort(new Error('Superseded by a newer translation'));
     const generation = (generations.get(translationKey) || 0) + 1;
     generations.set(translationKey, generation);
-    const blocks = record.document.blocks.filter(block => block.type !== 'code');
+    const blocks = record.document.blocks.filter(isTranslatable);
+    const context = documentContext(record.document.blocks, record.document.name);
     const job: TranslationJob = { id: randomUUID(), status: 'queued', completed: 0, total: blocks.length };
     const controller = new AbortController();
     if (!track(job, controller)) { response.status(429).json({ error: 'Too many active jobs' }); return; }
@@ -142,14 +151,21 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
       for (let offset = 0; offset < blocks.length; offset += batchSize) {
         controller.signal.throwIfAborted();
         const batch = blocks.slice(offset, offset + batchSize);
-        const result = await broker.translate({ ...input, segments: batch.map(block => ({ id: block.id, text: block.text })) }, controller.signal);
+        // Tables are sent cell by cell; every other block is one segment.
+        const result = await broker.translate({ ...input, context, segments: batch.flatMap(translationSegments) }, controller.signal);
         controller.signal.throwIfAborted();
         if (generations.get(translationKey) !== generation) throw new Error('Translation changed while this job was running; newer edits were preserved');
-        for (const resultBlock of result.results) units[resultBlock.id] = resultBlock.text;
+        const segments = new Map(result.results.map(item => [item.id, item.text]));
+        let saved = 0, failed = 0;
+        for (const block of batch) {
+          const text = assembleTranslation(block, segments);
+          if (text === undefined) failed++;
+          else { units[block.id] = text; saved++; }
+        }
         failures.push(...result.errors.map(item => item.message));
         // Commit each successful batch so progress, partial failures and cancellation
         // keep already completed work. Reload to preserve other languages/edits.
-        if (result.results.length) {
+        if (saved) {
           const current = await store.load(record.document.id);
           if (!current) throw new Error('Document was deleted');
           controller.signal.throwIfAborted();
@@ -158,12 +174,12 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
           current.latestLanguage = input.targetLanguage;
           await store.save(current);
         }
-        job.completed += result.results.length + result.errors.length;
+        job.completed += saved + failed;
       }
       controller.signal.throwIfAborted();
       if (generations.get(translationKey) !== generation) throw new Error('Translation changed while this job was running; newer edits were preserved');
       await store.flushCache();
-      if (failures.length) throw new Error(`${failures.length} blocks could not be translated. Completed translations were saved. ${failures[0]}`);
+      if (failures.length) throw new Error(`${failures.length} segments could not be translated. Completed translations were saved. ${failures[0]}`);
       job.status = 'completed';
     })().catch(error => {
       if (controller.signal.aborted) job.status = 'cancelled';
@@ -192,7 +208,7 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
     const validated: Record<string, string> = {};
     for (const segment of input.segments) {
       const block = blocks.get(segment.id);
-      if (!block || block.type === 'code' || seen.has(segment.id)) {
+      if (!block || !isTranslatable(block) || seen.has(segment.id)) {
         response.status(400).json({ error: 'Use unique IDs of translatable document blocks' }); return;
       }
       if (!segment.text.trim()) { response.status(400).json({ error: 'Translations must not be blank' }); return; }
@@ -210,7 +226,7 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
     };
     current.latestLanguage = input.targetLanguage;
     await store.save(current);
-    const translatable = current.document.blocks.filter(block => block.type !== 'code');
+    const translatable = current.document.blocks.filter(isTranslatable);
     const translated = translatable.filter(block => current.translations[input.targetLanguage]!.units[block.id] !== undefined).length;
     response.json({ documentId: current.document.id, targetLanguage: input.targetLanguage, method: 'agent', saved: seen.size, translated, total: translatable.length, complete: translated === translatable.length });
   });
@@ -239,12 +255,18 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
     const format = request.query.format === 'md' ? 'md' : 'html';
     const mode = request.query.mode === 'translated' ? 'translated' : 'bilingual';
     const units = record.translations[selected]?.units || {};
-    const missing = record.document.blocks.filter(block => block.type !== 'code' && units[block.id] === undefined);
+    const missing = record.document.blocks.filter(block => isTranslatable(block) && units[block.id] === undefined);
     if (missing.length && request.query.allowPartial !== 'true') { response.status(409).json({ error: `${missing.length} blocks are untranslated. Complete translation or explicitly export with allowPartial=true.` }); return; }
     response.type(format === 'md' ? 'text/markdown' : 'text/html');
     response.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`${record.document.name}.${selected}.${format}`)}`);
-    response.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'");
-    response.send(exportDocument(record, selected, format, mode));
+    response.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'");
+    // Figures are embedded so the exported file stands alone.
+    const images = new Map<string, string>();
+    for (const block of record.document.blocks) {
+      const path = block.asset ? store.assetPath(record.document.id, block.asset) : undefined;
+      if (path) images.set(block.asset!, (await readFile(path).catch(() => Buffer.alloc(0))).toString('base64'));
+    }
+    response.send(exportDocument(record, selected, format, mode, images));
   });
   app.use('/api', (_request, response) => response.status(404).json({ error: 'API route not found' }));
   const reader = resolve(repoRoot, 'apps/reader/dist');

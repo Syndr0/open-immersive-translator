@@ -11,6 +11,8 @@ import {
 import { I18nProvider, LocalizedError, type TranslationKey, type UiMessage, showMessage, uiError, useI18n } from './i18n';
 import { buildAgentPrompt, type AgentPromptKind } from './agent-prompts';
 import { readReaderLink } from './reader-links';
+import { RichText, MathBlock } from './math';
+import { isTranslatable, parseTable } from '@oit/core/document';
 
 const LANGUAGES = [
   ['zh-Hans', '简体中文'], ['zh-Hant', '繁體中文'], ['en', 'English'], ['ja', '日本語'],
@@ -206,7 +208,7 @@ function ReaderApp() {
     const currentTarget = target;
     const { generation, signal } = beginAction();
     setError(''); setNotice('');
-    setJob({ id: '', status: 'queued', completed: 0, total: currentDocument.blocks.filter((block) => block.type !== 'code').length });
+    setJob({ id: '', status: 'queued', completed: 0, total: currentDocument.blocks.filter(isTranslatable).length });
     try {
       const started = await request<{ jobId: string }>(`/api/documents/${encodeURIComponent(currentDocument.id)}/translate`, jsonOptions({ targetLanguage: currentTarget, sourceLanguage: 'auto' }, signal));
       if (generation !== epoch.current) {
@@ -290,8 +292,8 @@ function ReaderApp() {
   }
 
   const openPanel = (next: Panel) => { setPanel(next); setMobileSidebar(false); };
-  const translatedCount = document?.blocks.filter((block) => block.type !== 'code' && Object.hasOwn(units, block.id)).length ?? 0;
-  const totalCount = document?.blocks.filter((block) => block.type !== 'code').length ?? 0;
+  const translatedCount = document?.blocks.filter((block) => isTranslatable(block) && Object.hasOwn(units, block.id)).length ?? 0;
+  const totalCount = document?.blocks.filter(isTranslatable).length ?? 0;
   const running = isRunning(job);
   const progress = job?.total ? Math.min(100, Math.round(job.completed / job.total * 100)) : 0;
   const offline = !health && !healthLoading;
@@ -389,7 +391,7 @@ function ReaderApp() {
                 {original && <div className="original-preview"><iframe title={t('originalTitle', { name: document.name })} src={`/api/documents/${encodeURIComponent(document.id)}/source`} /></div>}
                 <article className={`paper mode-${mode}`} lang={mode === 'translated' ? target : 'und'}>
                   <div className="print-title"><h1>{document.name}</h1><p>{languageName(target)}</p></div>
-                  {document.blocks.length === 0 ? <div className="no-text"><h3>{t('noReadableText')}</h3><p>{t('needsOcr')}</p></div> : document.blocks.map((block, index) => <ReadingBlock key={block.id} block={block} translation={units[block.id]} mode={mode} language={target} index={index} editable={!running} onSave={(text) => saveUnit(block.id, text)} />)}
+                  {document.blocks.length === 0 ? <div className="no-text"><h3>{t('noReadableText')}</h3><p>{t('needsOcr')}</p></div> : document.blocks.map((block, index) => <ReadingBlock key={block.id} documentId={document.id} block={block} translation={units[block.id]} mode={mode} language={target} index={index} editable={!running} onSave={(text) => saveUnit(block.id, text)} />)}
                 </article>
               </div>
             </section>
@@ -477,8 +479,8 @@ function AgentPromptCard({ kind, document, targetLanguage }: {
   </section>;
 }
 
-function ReadingBlock({ block, translation, mode, language, index, editable, onSave }: {
-  block: DocumentBlock; translation?: string; mode: Mode; language: string; index: number;
+function ReadingBlock({ block, documentId, translation, mode, language, index, editable, onSave }: {
+  block: DocumentBlock; documentId: string; translation?: string; mode: Mode; language: string; index: number;
   editable: boolean; onSave: (text: string) => Promise<void>;
 }) {
   const { t } = useI18n();
@@ -487,10 +489,15 @@ function ReadingBlock({ block, translation, mode, language, index, editable, onS
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<UiMessage>('');
   useEffect(() => { setDraft(translation ?? ''); setEditing(false); setError(''); }, [translation, language]);
-  const isProtected = block.type === 'code';
-  const translated = typeof translation === 'string';
-  const canEdit = editable && translated && !isProtected;
-  const showSource = mode !== 'translated' || isProtected || !translated;
+  const translatable = isTranslatable(block);
+  const translated = translatable && typeof translation === 'string';
+  const canEdit = editable && translated;
+  // A bilingual table carries both languages in each cell instead of two tables.
+  const merged = block.type === 'table' && mode === 'bilingual' && translated && !editing;
+  // URLs, names and numbers come back unchanged; repeating them adds nothing.
+  const unchanged = translated && !editing && translation!.trim() === block.text.trim();
+  const showSource = !merged && (mode !== 'translated' || !translated);
+  const content = (text: string, other?: string) => <BlockContent block={block} text={text} documentId={documentId} translation={other} />;
 
   async function save() {
     setSaving(true); setError('');
@@ -499,27 +506,37 @@ function ReadingBlock({ block, translation, mode, language, index, editable, onS
     finally { setSaving(false); }
   }
 
-  return <section className={`reading-block block-${block.type} ${translated ? 'has-translation' : ''}`} data-block-id={block.id}>
-    {showSource && <div className={`source-content ${mode === 'bilingual' && translated ? 'muted-source' : ''}`}><BlockContent block={block} text={block.text} />{mode === 'translated' && !translated && !isProtected && <span className="untranslated-note">{t('sourceUntranslated')}</span>}</div>}
-    {!isProtected && mode !== 'source' && translated ? <div className="translated-content" lang={language} dir={['ar', 'he', 'fa', 'ur'].includes(language) ? 'rtl' : 'auto'}>
-      {editing ? <><div className="edit-area"><textarea aria-label={t('editBlock', { number: index + 1 })} value={draft} onChange={(event) => setDraft(event.target.value)} rows={Math.min(14, Math.max(3, Math.ceil(draft.length / 75)))} autoFocus /><div className="edit-actions"><button className="button ghost" onClick={() => { setEditing(false); setDraft(translation); setError(''); }} disabled={saving}>{t('cancel')}</button><button className="button primary" onClick={() => void save()} disabled={saving || !draft.trim()}>{saving && <LoaderCircle size={14} className="spin" />}{t('saveEdit')}</button></div>{error && <p className="edit-error" role="alert">{showMessage(error, t)}</p>}</div><div className="saved-print"><BlockContent block={block} text={translation} /></div></> : <><BlockContent block={block} text={translation} />{canEdit && <button className="edit-block-button" aria-label={t('editBlock', { number: index + 1 })} onClick={() => { setDraft(translation); setEditing(true); }}><Pencil size={14} /></button>}</>}
+  const body = <>
+    {showSource && <div className="source-content">{content(block.text)}{mode === 'translated' && translatable && !translated && <span className="untranslated-note">{t('sourceUntranslated')}</span>}</div>}
+    {mode !== 'source' && translated && !(unchanged && mode === 'bilingual') ? <div className="translated-content" lang={language} dir={['ar', 'he', 'fa', 'ur'].includes(language) ? 'rtl' : 'auto'}>
+      {editing ? <><div className="edit-area"><textarea aria-label={t('editBlock', { number: index + 1 })} value={draft} onChange={(event) => setDraft(event.target.value)} rows={Math.min(14, Math.max(3, Math.ceil(draft.length / 75)))} autoFocus /><div className="edit-actions"><button className="button ghost" onClick={() => { setEditing(false); setDraft(translation!); setError(''); }} disabled={saving}>{t('cancel')}</button><button className="button primary" onClick={() => void save()} disabled={saving || !draft.trim()}>{saving && <LoaderCircle size={14} className="spin" />}{t('saveEdit')}</button></div>{error && <p className="edit-error" role="alert">{showMessage(error, t)}</p>}</div><div className="saved-print">{content(translation!)}</div></> : <>{merged ? content(block.text, translation) : content(translation!)}{canEdit && <button className="edit-block-button" aria-label={t('editBlock', { number: index + 1 })} onClick={() => { setDraft(translation!); setEditing(true); }}><Pencil size={14} /></button>}</>}
     </div> : null}
+  </>;
+
+  return <section className={`reading-block block-${block.type} ${translated ? 'has-translation' : ''}`} data-block-id={block.id}>
+    {block.type === 'list' ? <><span className="list-marker" aria-hidden="true">{block.marker ?? '•'}</span><div className="list-body">{body}</div></> : body}
   </section>;
 }
 
-function BlockContent({ block, text }: { block: DocumentBlock; text: string }) {
+function BlockContent({ block, text, documentId, translation }: { block: DocumentBlock; text: string; documentId: string; translation?: string }) {
   if (block.type === 'code') return <pre><code>{text}</code></pre>;
+  if (block.type === 'formula') return <MathBlock latex={text} />;
+  if (block.type === 'figure') return block.asset ? <img className="figure-image" src={`/api/documents/${encodeURIComponent(documentId)}/assets/${encodeURIComponent(block.asset)}`} alt="" loading="lazy" /> : null;
   if (block.type === 'heading') {
     const level = Math.min(6, Math.max(2, block.level ?? 2));
-    if (level === 2) return <h2>{text}</h2>;
-    if (level === 3) return <h3>{text}</h3>;
-    return <h4>{text}</h4>;
+    const Heading = level === 2 ? 'h2' : level === 3 ? 'h3' : 'h4';
+    return <Heading><RichText text={text} /></Heading>;
   }
   if (block.type === 'table') {
-    const rows = text.trim().split('\n').map((line) => line.trim()).filter((line) => line.includes('|') && !/^\|?[\s:|-]+\|?$/.test(line)).map((line) => line.replace(/^\||\|$/g, '').split('|').map((cell) => cell.trim()));
-    if (rows.length) return <div className="table-scroll"><table><thead><tr>{rows[0].map((cell, i) => <th key={i}>{cell}</th>)}</tr></thead><tbody>{rows.slice(1).map((row, i) => <tr key={i}>{row.map((cell, j) => <td key={j}>{cell}</td>)}</tr>)}</tbody></table></div>;
+    const rows = parseTable(text);
+    const other = translation === undefined ? undefined : parseTable(translation);
+    const cell = (value: string, r: number, c: number) => {
+      const translated = other?.[r]?.[c];
+      return <><RichText text={value} />{translated && translated !== value && <span className="cell-translation"><RichText text={translated} /></span>}</>;
+    };
+    if (rows.length) return <div className="table-scroll"><table><thead><tr>{rows[0].map((value, c) => <th key={c}>{cell(value, 0, c)}</th>)}</tr></thead><tbody>{rows.slice(1).map((row, r) => <tr key={r}>{row.map((value, c) => <td key={c}>{cell(value, r + 1, c)}</td>)}</tr>)}</tbody></table></div>;
   }
-  return <p>{text}</p>;
+  return <p><RichText text={text} /></p>;
 }
 
 function App() {

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import type { AddressInfo } from 'node:net';
 import { protect, type Provider } from '@oit/core';
@@ -126,7 +126,8 @@ test('agent translation batches validate protected text atomically and export wi
     assert.equal(record.translations['zh-Hans']!.units[code.id], undefined);
     const exported = await fetch(`${base}/api/documents/${document.id}/export?format=html&targetLanguage=zh-Hans`).then(response => response.text());
     assert.ok(exported.includes('研究 &lt;script&gt;'));
-    assert.ok(exported.includes('$E=mc^2$'));
+    // Formulas are exported as MathML that keeps the original LaTeX as an annotation.
+    assert.ok(exported.includes('<annotation encoding="application/x-tex">E=mc^2</annotation>'));
     assert.ok(exported.includes('const source = 1;'));
     assert.ok(!exported.includes('<script>'));
     for (const invalid of [
@@ -336,4 +337,63 @@ test('library lists documents newest first and delete removes source, record and
     const reloaded = await createApp({ dataDir, provider: fixture });
     assert.deepEqual((await reloaded.store.list()).map(item => item.id), [first.id]);
   } finally { release?.(); api.close(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(dataDir, { recursive: true, force: true }); }
+});
+
+test('papers: Docling output is validated, figures are stored and served, tables translate per cell with context', async () => {
+  // A dot-folder, like the default .data directory, must still serve files.
+  const root = await mkdtemp(`${tmpdir()}/oit-paper-test-`), dataDir = `${root}/.data`;
+  const worker = `${root}/fake-docling.sh`;
+  // Stands in for the Python worker: writes one figure and prints structured blocks, some invalid.
+  await writeFile(worker, `#!/bin/sh\nprintf 'PNGDATA' > "$3/figure-1.png"\nprintf 'secret' > "$3/../input-copy.txt"\ncat <<'JSON'\n${JSON.stringify({ pageCount: 2, blocks: [
+    { type: 'heading', text: 'A Paper Title', level: 1, page: 1 },
+    { type: 'heading', text: 'Abstract', level: 2, page: 1 },
+    { type: 'paragraph', text: 'We study tables and figures.', page: 1 },
+    { type: 'figure', text: '', asset: 'figure-1.png', page: 1 },
+    { type: 'figure', text: '', asset: '../input.pdf', page: 1 },
+    { type: 'script', text: 'not a block type' },
+    { type: 'caption', text: 'Figure 1: An overview.', page: 1 },
+    { type: 'formula', text: 'E = mc^2', page: 2 },
+    { type: 'table', text: '| Model | Size |\n| --- | --- |\n| prior only | 2B |', page: 2 },
+    { type: 'list', text: 'First contribution.', marker: '1.', page: 2 },
+  ] })}\nJSON\n`, { mode: 0o755 });
+  const contexts: Array<string | undefined> = [];
+  const provider: Provider = { ...fixture, async translate(segments, _source, target, _signal, context) {
+    contexts.push(context);
+    return segments.map(segment => ({ ...segment, text: `${target}: ${segment.text}` }));
+  } };
+  const api = await createApp({ dataDir, provider, env: { PARSER: 'docling', DOCLING_PYTHON: worker } });
+  const server = api.app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  try {
+    const upload = await fetch(`${base}/api/documents`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-File-Name': 'paper.pdf' }, body: '%PDF-1.7 fake' });
+    assert.equal(upload.status, 201);
+    const { document } = await upload.json();
+    assert.deepEqual(document.blocks.map((block: { type: string }) => block.type), ['heading', 'heading', 'paragraph', 'figure', 'caption', 'formula', 'table', 'list']);
+    assert.equal('assets' in document, false);
+    const figure = document.blocks.find((block: { type: string }) => block.type === 'figure');
+    const image = await fetch(`${base}/api/documents/${document.id}/assets/${figure.asset}`);
+    assert.equal(image.status, 200); assert.equal(image.headers.get('content-type'), 'image/png'); assert.equal(await image.text(), 'PNGDATA');
+    assert.match(image.headers.get('cache-control')!, /immutable/);
+    for (const name of ['figure-2.png', '..%2Finput.pdf', 'input-copy.txt']) {
+      const missing = await fetch(`${base}/api/documents/${document.id}/assets/${name}`);
+      assert.equal(missing.status, 404); assert.doesNotMatch(missing.headers.get('cache-control') ?? '', /immutable/);
+    }
+
+    const { jobId } = await fetch(`${base}/api/documents/${document.id}/translate`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ targetLanguage: 'fr' }) }).then(r => r.json());
+    let job;
+    for (let i = 0; i < 100; i++) { job = await fetch(`${base}/api/jobs/${jobId}`).then(r => r.json()); if (job.status !== 'queued' && job.status !== 'running') break; await new Promise(resolve => setTimeout(resolve, 5)); }
+    assert.equal(job.status, 'completed'); assert.equal(job.total, 6); assert.equal(job.completed, 6);
+    assert.ok(contexts.every(context => context === 'Title: A Paper Title\nAbstract: We study tables and figures.'));
+    const { translations } = await fetch(`${base}/api/documents/${document.id}?targetLanguage=fr`).then(r => r.json());
+    const table = document.blocks.find((block: { type: string }) => block.type === 'table');
+    assert.equal(translations.units[table.id], '| fr: Model | fr: Size |\n| --- | --- |\n| fr: prior only | 2B |');
+    assert.equal(Object.keys(translations.units).length, 6, 'figure and formula are not translated');
+    const html = await fetch(`${base}/api/documents/${document.id}/export?format=html&targetLanguage=fr`).then(r => r.text());
+    assert.ok(html.includes(`<img src="data:image/png;base64,${Buffer.from('PNGDATA').toString('base64')}"`));
+    assert.ok(html.includes('<annotation encoding="application/x-tex">E = mc^2</annotation>'));
+    assert.ok(html.includes('prior only<span class="cell-translation">fr: prior only</span>'));
+
+    assert.equal((await fetch(`${base}/api/documents/${document.id}`, { method: 'DELETE' })).status, 204);
+    await assert.rejects(stat(`${dataDir}/assets/${document.id}`));
+  } finally { api.close(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(root, { recursive: true, force: true }); }
 });

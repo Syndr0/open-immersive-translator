@@ -13,7 +13,9 @@
     "lucide-react": "^1.60.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
-    "@oit/agent-prompts": "*"
+    "@oit/agent-prompts": "*",
+    "@oit/core": "*",
+    "katex": "^0.19.1"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",

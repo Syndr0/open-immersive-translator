@@ -1,10 +1,6 @@
-export interface DocumentBlock {
-  id: string;
-  type: 'heading' | 'paragraph' | 'code' | 'table';
-  text: string;
-  page?: number;
-  level?: number;
-}
+import type { DocumentBlock } from '@oit/core/document';
+
+export type { DocumentBlock };
 
 export interface ReadingDocument {
   id: string;
