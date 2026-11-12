@@ -47,7 +47,7 @@ HTML and Markdown exports escape untrusted text and include explicit source/tran
 
 ## Local deployment boundary
 
-The API binds to loopback. Provider credentials come from environment variables on the server, never extension settings or page scripts. Browser origins and request hosts are checked. Uploaded files and persistent caches remain in an ignored data directory. A network-hosted multi-user service requires authentication, resource limits, ownership checks and user-separated storage beyond this local deployment.
+The API binds to loopback. Provider credentials come from environment variables or from the app's Translation service screen, which saves them in the data folder's `settings.json` (owner-readable only). They are never returned by the API, stored in the browser, or readable by extension settings or page scripts. Browser extensions may read which service is active but cannot change it, because a changed service address redirects where text and keys are sent. Browser origins and request hosts are checked. Uploaded files and persistent caches remain in an ignored data directory. A network-hosted multi-user service requires authentication, resource limits, ownership checks and user-separated storage beyond this local deployment.
 
 ## Deliberate future work
 

@@ -8,10 +8,11 @@ import {
   type TranslationJob, MAX_UPLOAD_BYTES, isAborted, jsonOptions, readRecentIds,
   request, wait, writeRecentIds,
 } from './api';
-import { I18nProvider, LocalizedError, type TranslationKey, type UiMessage, showMessage, uiError, useI18n } from './i18n';
+import { I18nProvider, LocalizedError, type UiMessage, showMessage, uiError, useI18n } from './i18n';
 import { buildAgentPrompt, type AgentPromptKind } from './agent-prompts';
 import { readReaderLink } from './reader-links';
 import { RichText, MathBlock } from './math';
+import { ProviderSettings, SERVICE_NAMES } from './provider-settings';
 import { isTranslatable, parseTable } from '@oit/core/document';
 
 const LANGUAGES = [
@@ -22,9 +23,6 @@ const LANGUAGES = [
 type Mode = 'bilingual' | 'translated' | 'source';
 type Panel = 'settings' | 'extension' | 'document-agent' | null;
 
-const PROVIDER_NAMES: Record<string, TranslationKey> = {
-  codex: 'codexTranslation', ollama: 'localTranslation', 'google-free': 'googleFreeTranslation', google: 'googleTranslation', demo: 'demoProvider',
-};
 const languageName = (value: string) => LANGUAGES.find(([code]) => code === value)?.[1] ?? value;
 const isRunning = (job: TranslationJob | null) => !!job && ['queued', 'running'].includes(job.status);
 const summarize = ({ id, name, format, pageCount, blocks, createdAt }: ReadingDocument): DocumentSummary => ({ id, name, format, pageCount, blockCount: blocks.length, createdAt });
@@ -298,7 +296,7 @@ function ReaderApp() {
   const progress = job?.total ? Math.min(100, Math.round(job.completed / job.total * 100)) : 0;
   const offline = !health && !healthLoading;
   const demo = health?.provider.kind === 'demo';
-  const providerName = health ? PROVIDER_NAMES[health.provider.kind] ? t(PROVIDER_NAMES[health.provider.kind]) : health.provider.kind : '';
+  const providerName = health ? SERVICE_NAMES[health.provider.kind] ? t(SERVICE_NAMES[health.provider.kind]) : health.provider.kind : '';
 
   return (
     <div className="app-shell">
@@ -406,15 +404,8 @@ function ReaderApp() {
             <button className="icon-button" aria-label={t('closeDialog')} onClick={() => setPanel(null)}><X size={19} /></button>
           </div>
           {panel === 'settings' ? <>
-            <div className="settings-status"><span className={`status-dot ${offline ? 'offline' : health?.provider.configured ? 'online' : 'warning'}`} /><div><strong>{health ? `${providerName} · ${health.provider.model}` : t('apiNotConnected')}</strong><small>{health ? health.provider.configured ? t('providerConfigured') : t('providerIncomplete') : t('expectedServer')}</small></div><button className="icon-button" aria-label={t('refreshServer')} onClick={() => void refreshHealth()}><RefreshCw size={16} className={healthLoading ? 'spin' : ''} /></button></div>
+            <ProviderSettings language={target} onChanged={() => void refreshHealth()} />
             <AgentPromptCard kind="provider" />
-            <details className="manual-setup"><summary>{t('manualSetup')}</summary>
-              <h3>{t('googleFreeSetup')}</h3><p>{t('googleFreeDescription')}</p><pre className="setup-code">{'TRANSLATION_PROVIDER=google-free'}</pre>
-              <h3>{t('codexSetup')}</h3><p>{t('codexSetupDescription')}</p><pre className="setup-code">{'TRANSLATION_PROVIDER=codex\nCODEX_MODEL=gpt-6.1-sol\nCODEX_CLI_PATH=/absolute/path/to/codex'}</pre><p>{t('codexEnvNote')}</p><a className="text-button" href="https://learn.chatgpt.com/docs/auth" target="_blank" rel="noopener noreferrer">{t('codexSetupDocs')} ↗</a>
-              <h3>{t('startLocal')}</h3><p>{t('startLocalDescription')}</p><pre className="setup-code">{'ollama pull qwen3.5:2b\nnpm install\nnpm run dev'}</pre><p>{t('localModelNote')}</p>
-              <h3>{t('googleSetup')}</h3><p>{t('googleSetupDescription')}</p><pre className="setup-code">{'TRANSLATION_PROVIDER=google\nGOOGLE_TRANSLATE_API_KEY=your-google-cloud-api-key'}</pre><p>{t('googleEnvNote')}</p><a className="text-button" href="https://docs.cloud.google.com/translate/docs/setup" target="_blank" rel="noopener noreferrer">{t('googleSetupDocs')} ↗</a>
-              <h3>{t('compatibleApi')}</h3><p>{t('compatibleFirst')} <code>.env</code>{t('compatibleSecond')} <code>.env.example</code> {t('compatibleLast')}</p><p>{t('parserNote')}</p>
-            </details>
           </> : panel === 'extension' ? <>
             <AgentPromptCard kind="website" />
             <details className="manual-setup"><summary>{t('manualSetup')}</summary><ol className="setup-steps">
