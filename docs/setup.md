@@ -43,6 +43,14 @@ For offline translation, set `TRANSLATION_PROVIDER=ollama`, install [Ollama](htt
 
 Open **http://127.0.0.1:5173** for the document workspace. The API listens on **http://127.0.0.1:8787**. Choose a target language, import a file and select Translate. Your selected provider must be available for actual translation; there is no silent mock fallback.
 
+### Choose the translation service in the app
+
+Select the service name at the bottom of the sidebar to open **Translation service**. Pick Google Translate (free web), Google Cloud Translation, Ollama, an OpenAI-compatible API or Codex, fill in its address, model or API key, select **Test** to translate one sentence, then **Save**. The change applies to new translations at once; no restart or file editing is needed.
+
+- A choice saved in the app is stored in `settings.json` in the data folder and takes precedence over `.env`. The `.env` values below remain the defaults until something is saved.
+- API keys are sent only to the local server and are never returned to the page. Changing an OpenAI-compatible server address clears its saved key, so a key is never sent to a server it was not entered for.
+- Ollama and OpenAI-compatible services suggest their installed models in the Model field.
+
 For a single-server build:
 
 ```sh
