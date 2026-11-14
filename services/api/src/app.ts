@@ -6,11 +6,13 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { TranslationBroker, assembleTranslation, documentContext, isTranslatable, protect, restore, translationSegments, type Provider, type TranslationJob } from '@oit/core';
-import { Store } from './store.ts';
+import { TranslationBroker, assembleTranslation, documentContext, isPendingFormula, isTranslatable, protect, restore, translationSegments, type Provider, type TranslationJob } from '@oit/core';
+import { Store, assetMimeType } from './store.ts';
 import { parseDocument } from './parser.ts';
+import { MineruService } from './mineru.ts';
 import { providerFromEnv } from './provider.ts';
 import { exportDocument } from './export.ts';
+import katex from 'katex';
 
 const language = z.string().trim().min(2).max(60).regex(/^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/, 'Use a language tag such as en, zh-Hans or auto');
 const requestSchema = z.object({
@@ -26,6 +28,8 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
   const env = options.env || process.env;
   const store = new Store(options.dataDir || resolve(repoRoot, env.DATA_DIR || '.data'));
   await store.initialize();
+  const mineru = new MineruService(env, repoRoot, resolve(store.directory, 'mineru'));
+  mineru.warm();
   const provider = options.provider || providerFromEnv(env);
   const broker = new TranslationBroker(provider, store);
   const jobs = new Map<string, TranslationJob>();
@@ -95,7 +99,7 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
     let name: string;
     try { name = decodeURIComponent(request.get('X-File-Name') || 'document.txt').split(/[\\/]/).pop()!.replace(/[\x00-\x1f]/g, '').slice(0, 200); }
     catch { response.status(400).json({ error: 'Invalid filename encoding' }); return; }
-    const { assets, ...document } = await parseDocument(name, request.body, env);
+    const { assets, ...document } = await parseDocument(name, request.body, env, { mineru });
     await store.create(document, request.body, assets);
     response.status(201).json({ document });
   });
@@ -124,7 +128,7 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
     const path = record && record.document.blocks.some(block => block.asset === request.params.name) ? store.assetPath(record.document.id, request.params.name) : undefined;
     if (!path) { response.status(404).json({ error: 'Asset not found' }); return; }
     // Cache headers go only on a served file, never on an error a browser would then keep.
-    response.type('image/png').sendFile(path, { dotfiles: 'allow', cacheControl: false, headers: { 'Cache-Control': 'private, max-age=31536000, immutable' } });
+    response.type(assetMimeType(request.params.name)).sendFile(path, { dotfiles: 'allow', cacheControl: false, headers: { 'Cache-Control': 'private, max-age=31536000, immutable' } });
   });
   app.post('/api/documents/:id/translate', async (request, response) => {
     const record = await store.load(request.params.id);
@@ -147,7 +151,8 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
       job.status = 'running';
       const units = { ...initial };
       const failures: string[] = [];
-      const batchSize = Math.max(1, Math.min(32, provider.batch?.maxSegments ?? 8));
+      // Enough blocks per step for every parallel request to carry a full batch.
+      const batchSize = Math.max(1, Math.min(160, (provider.batch?.maxSegments ?? 8) * (provider.concurrency ?? 2)));
       for (let offset = 0; offset < blocks.length; offset += batchSize) {
         controller.signal.throwIfAborted();
         const batch = blocks.slice(offset, offset + batchSize);
@@ -236,6 +241,34 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
     if (job.status === 'queued' || job.status === 'running') { controllers.get(job.id)?.abort(new Error('Translation cancelled')); job.status = 'cancelled'; }
     response.json(job);
   });
+  // An agent reads formula images with its own model and supplies LaTeX. The batch is
+  // validated as a whole, so one unreadable formula never leaves the others half-saved.
+  app.put('/api/documents/:id/formulas', async (request, response) => {
+    const input = z.object({ formulas: z.array(z.object({ id: z.string().min(1).max(200), latex: z.string().trim().min(1).max(5000) }).strict()).min(1).max(100) }).strict().parse(request.body);
+    const record = await store.load(request.params.id);
+    if (!record) { response.status(404).json({ error: 'Document not found' }); return; }
+    const blocks = new Map(record.document.blocks.map(block => [block.id, block]));
+    const seen = new Set<string>();
+    const problems: string[] = [];
+    for (const { id, latex } of input.formulas) {
+      if (blocks.get(id)?.type !== 'formula' || seen.has(id)) { problems.push(`${id}: not a formula block of this document, or listed twice`); continue; }
+      seen.add(id);
+      // Links, images and HTML attributes are never rendered; KaTeX would show them as red error text.
+      const untrusted: string[] = [];
+      try {
+        katex.renderToString(latex, { displayMode: true, throwOnError: true, trust: context => { untrusted.push(context.command); return false; }, strict: 'ignore', maxExpand: 1000 });
+        if (untrusted.length) problems.push(`${id}: ${[...new Set(untrusted)].join(', ')} is not allowed in a formula`);
+      } catch (error) { problems.push(`${id}: ${error instanceof Error ? error.message.replace(/^KaTeX parse error: /, '').slice(0, 300) : 'invalid LaTeX'}`); }
+    }
+    if (problems.length) { response.status(400).json({ error: `No formulas were saved. Fix these and resubmit the batch: ${problems.join('; ')}` }); return; }
+    // Reload so a concurrent translation or edit of other blocks is kept.
+    const current = (await store.load(record.document.id))!;
+    const latexById = new Map(input.formulas.map(({ id, latex }) => [id, latex]));
+    current.document.blocks = current.document.blocks.map(block => latexById.has(block.id) ? { ...block, text: latexById.get(block.id)! } : block);
+    await store.save(current);
+    const formulas = current.document.blocks.filter(block => block.type === 'formula');
+    response.json({ documentId: current.document.id, saved: latexById.size, pending: formulas.filter(isPendingFormula).length, total: formulas.length });
+  });
   app.patch('/api/documents/:id/blocks/:blockId', async (request, response) => {
     const input = z.object({ text: z.string().max(100_000), targetLanguage: language }).parse(request.body);
     const record = await store.load(request.params.id);
@@ -264,7 +297,7 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
     const images = new Map<string, string>();
     for (const block of record.document.blocks) {
       const path = block.asset ? store.assetPath(record.document.id, block.asset) : undefined;
-      if (path) images.set(block.asset!, (await readFile(path).catch(() => Buffer.alloc(0))).toString('base64'));
+      if (path) images.set(block.asset!, `data:${assetMimeType(block.asset!)};base64,${(await readFile(path).catch(() => Buffer.alloc(0))).toString('base64')}`);
     }
     response.send(exportDocument(record, selected, format, mode, images));
   });
@@ -280,5 +313,5 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
     if (status && status >= 500) console.error(error);
     response.status(status && status >= 400 && status < 600 ? status : 400).json({ error: error instanceof Error ? error.message : 'Request failed' });
   });
-  return { app, store, broker, jobs, close: () => { for (const controller of controllers.values()) controller.abort(new Error('Server shutting down')); } };
+  return { app, store, broker, jobs, close: () => { for (const controller of controllers.values()) controller.abort(new Error('Server shutting down')); mineru.close(); } };
 }

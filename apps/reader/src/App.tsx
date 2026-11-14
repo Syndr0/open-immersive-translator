@@ -12,7 +12,7 @@ import { I18nProvider, LocalizedError, type TranslationKey, type UiMessage, show
 import { buildAgentPrompt, type AgentPromptKind } from './agent-prompts';
 import { readReaderLink } from './reader-links';
 import { RichText, MathBlock } from './math';
-import { isTranslatable, parseTable } from '@oit/core/document';
+import { isPendingFormula, isTranslatable, parseTable } from '@oit/core/document';
 
 const LANGUAGES = [
   ['zh-Hans', '简体中文'], ['zh-Hant', '繁體中文'], ['en', 'English'], ['ja', '日本語'],
@@ -295,6 +295,7 @@ function ReaderApp() {
   const translatedCount = document?.blocks.filter((block) => isTranslatable(block) && Object.hasOwn(units, block.id)).length ?? 0;
   const totalCount = document?.blocks.filter(isTranslatable).length ?? 0;
   const running = isRunning(job);
+  const pendingFormulas = document?.blocks.filter(isPendingFormula).length ?? 0;
   const progress = job?.total ? Math.min(100, Math.round(job.completed / job.total * 100)) : 0;
   const offline = !health && !healthLoading;
   const demo = health?.provider.kind === 'demo';
@@ -386,6 +387,7 @@ function ReaderApp() {
                 </div>
               </div>
               {running && <div className="translation-progress" role="status" aria-label={t('translatingTo', { language: languageName(target) })}><div className="progress-track"><div style={{ width: `${progress}%` }} /></div><span>{job?.completed ?? 0} / {job?.total ?? totalCount}</span></div>}
+              {pendingFormulas > 0 && <div className="formula-note" role="note"><span>{t('formulasPending', { count: pendingFormulas })}</span><button className="text-button" onClick={() => setPanel('document-agent')}>{t('convertFormulas')}</button></div>}
               {document.warnings.length > 0 && <details className="document-warnings"><summary>{t('documentNotes', { count: document.warnings.length })}</summary><ul>{document.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></details>}
               <div className={`reading-layout ${original ? 'with-original' : ''}`}>
                 {original && <div className="original-preview"><iframe title={t('originalTitle', { name: document.name })} src={`/api/documents/${encodeURIComponent(document.id)}/source`} /></div>}
@@ -520,7 +522,8 @@ function ReadingBlock({ block, documentId, translation, mode, language, index, e
 
 function BlockContent({ block, text, documentId, translation }: { block: DocumentBlock; text: string; documentId: string; translation?: string }) {
   if (block.type === 'code') return <pre><code>{text}</code></pre>;
-  if (block.type === 'formula') return <MathBlock latex={text} />;
+  if (block.type === 'formula') return text.trim() ? <MathBlock latex={text} />
+    : block.asset ? <img className="formula-image" src={`/api/documents/${encodeURIComponent(documentId)}/assets/${encodeURIComponent(block.asset)}`} alt={block.hint ?? ''} loading="lazy" /> : null;
   if (block.type === 'figure') return block.asset ? <img className="figure-image" src={`/api/documents/${encodeURIComponent(documentId)}/assets/${encodeURIComponent(block.asset)}`} alt="" loading="lazy" /> : null;
   if (block.type === 'heading') {
     const level = Math.min(6, Math.max(2, block.level ?? 2));

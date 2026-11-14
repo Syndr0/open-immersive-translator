@@ -115,6 +115,8 @@ const en = {
   fileTooLarge: 'Choose a file of 25 MB or less.',
   dropDocument: 'Drop a document here',
   supportedFormats: 'PDF, DOCX, Markdown, TXT or HTML · up to 25 MB',
+  formulasPending: { one: '{count} formula is shown as an image.', other: '{count} formulas are shown as images.' },
+  convertFormulas: 'Convert with your AI agent',
 } satisfies Record<string, Phrase>;
 
 export type TranslationKey = keyof typeof en;
@@ -229,6 +231,8 @@ const zh: Record<TranslationKey, Phrase> = {
   fileTooLarge: '请选择不超过 25 MB 的文件。',
   dropDocument: '将文档拖放到这里',
   supportedFormats: 'PDF、DOCX、Markdown、TXT 或 HTML · 最大 25 MB',
+  formulasPending: '{count} 个公式以图片显示。',
+  convertFormulas: '让 AI 代理识别',
 };
 
 export type Translate = (key: TranslationKey, parameters?: Parameters) => string;

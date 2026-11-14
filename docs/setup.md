@@ -12,7 +12,7 @@ An independent, MIT-licensed implementation of paragraph-based website translati
 - **Documents:** import text PDFs, DOCX, HTML, Markdown and TXT; translate blocks; edit translations; export bilingual HTML/Markdown or print to PDF.
 - **Providers:** free Google web translation without a key, Google Cloud Translation, local Ollama, an installed Codex CLI, or a compatible chat-completion endpoint. Provider credentials stay in the backend environment.
 - **Shared core:** protected code/math/link tokens, identified results, bounded requests, caching and explicit per-segment failures.
-- **Papers:** with the Docling worker, PDFs keep their figures (as images), formulas (LaTeX, rendered with KaTeX), tables (each cell translated beside its source), lists, captions, footnotes and references. The built-in parser needs no Python: it recovers headings, lists, captions and references from the text layer, but not figures, formulas or table grids.
+- **Papers:** with the [MinerU parser](../workers/mineru/README.md), PDFs keep inline and display math as LaTeX (rendered with KaTeX), tables (each cell translated beside its source), figures, captions, footnotes and references. Docling is a lighter alternative and the fallback. The built-in parser needs no Python: it recovers headings, lists, captions and references from the text layer, but not math, figures or table grids.
 
 Documents are reflowed into a bilingual reading view, not redrawn at the original PDF coordinates. Parser and translation quality depend on the chosen engines; for papers, an LLM provider (Codex or a 7B+ local model) handles terminology better than the free Google endpoint. See [architecture and limits](architecture.md).
 
@@ -114,7 +114,10 @@ After rebuilding an installed unpacked extension, click **Reload** on its card i
 
 The extension installs its control on HTTP/HTTPS pages and requests site access for that purpose. It scans and submits text only after you choose Translate. Browser-internal pages, inaccessible frames, shadow-root content and canvas/image-only text require further integrations. Website text is sent to your configured backend/provider when you translate.
 
-### Optional Docling parser
+### Optional MinerU and Docling parsers
+
+For math-heavy PDFs, install the [MinerU parser](../workers/mineru/README.md) and set `PARSER=mineru`; the API starts and stops it for you.
+
 
 The Python worker is optional and separate from the Node installation, but recommended for papers. Follow the [Docling worker setup](../workers/docling/README.md), set `PARSER=docling` and point `DOCLING_PYTHON` at that environment's Python (relative paths resolve from the repository root). See [document parsing](architecture.md#document-parsing). Model downloads may be needed on the first run. Code and model licenses are separate; select and pin the models for your deployment.
 

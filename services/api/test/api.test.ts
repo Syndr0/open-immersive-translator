@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import type { AddressInfo } from 'node:net';
 import { protect, type Provider } from '@oit/core';
@@ -395,5 +395,55 @@ test('papers: Docling output is validated, figures are stored and served, tables
 
     assert.equal((await fetch(`${base}/api/documents/${document.id}`, { method: 'DELETE' })).status, 204);
     await assert.rejects(stat(`${dataDir}/assets/${document.id}`));
+  } finally { api.close(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(root, { recursive: true, force: true }); }
+});
+
+test('formulas kept as images are filled in with validated LaTeX from an agent', async () => {
+  const root = await mkdtemp(`${tmpdir()}/oit-formula-test-`), dataDir = `${root}/.data`;
+  const worker = `${root}/fake-docling.sh`;
+  // Records the formula mode it was started with, and returns one unread and one read formula.
+  await writeFile(worker, `#!/bin/sh\nprintf '%s' "$4" > "${root}/mode.txt"\nprintf 'FORMULAPNG' > "$3/formula-1.png"\ncat <<'JSON'\n${JSON.stringify({ pageCount: 1, blocks: [
+    { type: 'paragraph', text: 'The return is defined as follows.', page: 1 },
+    { type: 'formula', text: '', asset: 'formula-1.png', hint: 'Gt := ∞∑ k=0 γ kRt+k+1', page: 1 },
+    { type: 'formula', text: 'E = mc^2', page: 1 },
+    { type: 'formula', text: '', asset: 'formula-9.png', page: 1 },
+  ] })}\nJSON\n`, { mode: 0o755 });
+  const api = await createApp({ dataDir, provider: fixture, env: { PARSER: 'docling', DOCLING_PYTHON: worker } });
+  const server = api.app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const put = (id: string, formulas: unknown) => fetch(`${base}/api/documents/${id}/formulas`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ formulas }) });
+  try {
+    const { document } = await fetch(`${base}/api/documents`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-File-Name': 'lecture.pdf' }, body: '%PDF-1.7 fake' }).then(r => r.json());
+    assert.equal(await readFile(`${root}/mode.txt`, 'utf8'), 'agent', 'the slow formula model is off by default');
+    const formulas = document.blocks.filter((block: { type: string }) => block.type === 'formula');
+    assert.equal(formulas.length, 2, 'a formula with neither LaTeX nor a stored image is dropped');
+    const [pending, read] = formulas;
+    assert.deepEqual([pending.text, pending.asset, pending.hint], ['', 'formula-1.png', 'Gt := ∞∑ k=0 γ kRt+k+1']);
+    assert.equal(await fetch(`${base}/api/documents/${document.id}/assets/formula-1.png`).then(r => r.text()), 'FORMULAPNG');
+    assert.ok((await fetch(`${base}/api/documents/${document.id}/export?format=html&allowPartial=true`).then(r => r.text())).includes(`<img src="data:image/png;base64,${Buffer.from('FORMULAPNG').toString('base64')}"`));
+
+    const latex = 'G_t := \\sum_{k=0}^{\\infty} \\gamma^k R_{t+k+1}';
+    const invalid = await put(document.id, [{ id: pending.id, latex }, { id: read.id, latex: '\\frac{1}{' }]);
+    assert.equal(invalid.status, 400);
+    assert.match((await invalid.json()).error, new RegExp(`No formulas were saved.*${read.id}`));
+    for (const formulasInput of [[{ id: document.blocks[0].id, latex: 'x' }], [{ id: pending.id, latex: 'x' }, { id: pending.id, latex: 'y' }], [{ id: pending.id, latex: '\\href{javascript:alert(1)}{x}' }]]) {
+      assert.equal((await put(document.id, formulasInput)).status, 400);
+    }
+    assert.equal((await fetch(`${base}/api/documents/${document.id}`).then(r => r.json())).document.blocks[1].text, '', 'a rejected batch changes nothing');
+
+    const saved = await put(document.id, [{ id: pending.id, latex: `  ${latex}  ` }]);
+    assert.equal(saved.status, 200);
+    assert.deepEqual(await saved.json(), { documentId: document.id, saved: 1, pending: 0, total: 2 });
+    const reloaded = await createApp({ dataDir, provider: fixture });
+    assert.equal((await reloaded.store.load(document.id))!.document.blocks[1]!.text, latex);
+    const html = await fetch(`${base}/api/documents/${document.id}/export?format=html&allowPartial=true`).then(r => r.text());
+    assert.ok(html.includes('<annotation encoding="application/x-tex">G_t := \\sum_{k=0}^{\\infty} \\gamma^k R_{t+k+1}</annotation>'));
+    assert.equal((await put('00000000-0000-4000-8000-000000000000', [{ id: pending.id, latex }])).status, 404);
+
+    const local = await createApp({ dataDir: `${root}/local`, provider: fixture, env: { PARSER: 'docling', DOCLING_PYTHON: worker, DOCLING_FORMULAS: 'local' } });
+    const localServer = local.app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => localServer.once('listening', resolve));
+    await fetch(`http://127.0.0.1:${(localServer.address() as AddressInfo).port}/api/documents`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-File-Name': 'lecture.pdf' }, body: '%PDF-1.7 fake' });
+    await new Promise<void>(resolve => localServer.close(() => resolve()));
+    assert.equal(await readFile(`${root}/mode.txt`, 'utf8'), 'local');
   } finally { api.close(); await new Promise<void>(resolve => server.close(() => resolve())); await rm(root, { recursive: true, force: true }); }
 });

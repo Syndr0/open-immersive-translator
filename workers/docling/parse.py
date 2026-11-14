@@ -1,8 +1,12 @@
 """Docling layout adapter for papers.
 
-Usage: parse.py INPUT.pdf ASSET_DIR
-Stdout is one JSON object: {"pageCount": n, "blocks": [...]}. Figure and
-fallback formula images are written to ASSET_DIR as figure-N.png.
+Usage: parse.py INPUT.pdf ASSET_DIR [agent|local]
+Stdout is one JSON object: {"pageCount": n, "blocks": [...]}. Figures are
+written to ASSET_DIR as figure-N.png and formula crops as formula-N.png.
+
+Formula mode "agent" (default) skips Docling's formula model, which is slow on
+a laptop CPU: each formula is kept as an image for an AI agent to read later.
+"local" runs the model and keeps an image only where it fails.
 """
 import contextlib
 import json
@@ -13,7 +17,7 @@ NUMBERING = re.compile(r"^(\d+(?:\.\d+)*|[A-Z](?:\.\d+)*)\.?\s+\S")
 REFERENCES = re.compile(r"^(?:\d+\.?\s*)?(?:references|bibliography)$", re.I)
 
 
-def convert(path, ocr):
+def convert(path, ocr, formulas):
     from docling.datamodel.base_models import InputFormat
     from docling.datamodel.pipeline_options import PdfPipelineOptions
     from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -21,7 +25,7 @@ def convert(path, ocr):
     options = PdfPipelineOptions()
     options.do_ocr = ocr
     options.do_table_structure = True
-    options.do_formula_enrichment = True
+    options.do_formula_enrichment = formulas == "local"
     options.generate_picture_images = True
     options.generate_page_images = True  # Crops formulas that could not be read as LaTeX.
     options.images_scale = 2.0
@@ -49,16 +53,15 @@ def heading_level(text, first):
 def blocks_from(document, asset_dir):
     from docling_core.types.doc import CodeItem, DocItemLabel, FormulaItem, GroupItem, GroupLabel, ListItem, PictureItem, SectionHeaderItem, TableItem, TextItem
 
-    blocks, skipped, figures = [], set(), 0
+    blocks, skipped, counts = [], set(), {"figure": 0, "formula": 0}
     in_references, seen_heading = False, False
 
-    def save_image(item):
-        nonlocal figures
+    def save_image(item, kind="figure"):
         image = item.get_image(document)
         if image is None:
             return None
-        figures += 1
-        name = f"figure-{figures}.png"
+        counts[kind] += 1
+        name = f"{kind}-{counts[kind]}.png"
         image.save(f"{asset_dir}/{name}", "PNG", optimize=True)
         return name
 
@@ -106,9 +109,11 @@ def blocks_from(document, asset_dir):
             if text:
                 blocks.append({"type": "formula", "text": text, "page": page(item)})
             else:
-                name = save_image(item)
+                # Unread formula: the crop is shown until an agent supplies LaTeX. The
+                # text-layer reading is a hint for that agent, not a rendering.
+                name = save_image(item, "formula")
                 if name:
-                    blocks.append({"type": "figure", "text": "", "asset": name, "page": page(item)})
+                    blocks.append({"type": "formula", "text": "", "asset": name, "hint": " ".join((item.orig or "").split())[:2000], "page": page(item)})
             continue
         if not text:
             continue
@@ -134,12 +139,13 @@ def blocks_from(document, asset_dir):
 
 def main():
     source, asset_dir = sys.argv[1], sys.argv[2]
+    formulas = "local" if len(sys.argv) > 3 and sys.argv[3] == "local" else "agent"
     # Keep conversion progress and model logging away from the JSON protocol.
     with contextlib.redirect_stdout(sys.stderr):
-        document = convert(source, ocr=False)
+        document = convert(source, ocr=False, formulas=formulas)
         # A scan has no text layer: recognize it instead of returning an empty paper.
         if sum(len(item.text) for item, _ in document.iterate_items() if hasattr(item, "text")) < 200:
-            document = convert(source, ocr=True)
+            document = convert(source, ocr=True, formulas=formulas)
         blocks = blocks_from(document, asset_dir)
         page_count = len(document.pages)
     print(json.dumps({"pageCount": page_count, "blocks": blocks}, ensure_ascii=False))

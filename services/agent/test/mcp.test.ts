@@ -114,3 +114,58 @@ test('official MCP stdio client can translate an uploaded document with its own 
     await rm(temporary, { recursive: true, force: true });
   }
 });
+
+test('an agent sees formula images through MCP and saves the LaTeX its own model reads', { timeout: 30_000 }, async () => {
+  const temporary = await mkdtemp(join(tmpdir(), 'oit-mcp-formulas-'));
+  const outputs = join(temporary, 'outputs');
+  await mkdir(outputs);
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
+  const worker = join(temporary, 'fake-docling.sh');
+  await writeFile(worker, `#!/bin/sh\nprintf '${png.toString('base64')}' | base64 -d > "$3/formula-1.png"\ncp "$3/formula-1.png" "$3/formula-2.png"\ncat <<'JSON'\n${JSON.stringify({ pageCount: 1, blocks: [
+    { type: 'paragraph', text: 'Two equations follow.', page: 1 },
+    { type: 'formula', text: '', asset: 'formula-1.png', hint: 'Gt := ∞∑ k=0 γ kRt+k+1', page: 1 },
+    { type: 'formula', text: '', asset: 'formula-2.png', page: 2 },
+  ] })}\nJSON\n`, { mode: 0o755 });
+  const api = await createApp({ dataDir: join(temporary, 'data'), env: { TRANSLATION_PROVIDER: 'google', PARSER: 'docling', DOCLING_PYTHON: worker } });
+  const httpServer = api.app.listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => httpServer.once('listening', resolve));
+  const base = `http://127.0.0.1:${(httpServer.address() as AddressInfo).port}`;
+  const repository = fileURLToPath(new URL('../../../', import.meta.url));
+  const transport = new StdioClientTransport({ command: process.execPath, args: [join(repository, 'scripts/agent-service.mjs')], cwd: temporary, env: { OIT_API_URL: base, OIT_INPUT_ROOTS: temporary, OIT_OUTPUT_DIR: outputs }, stderr: 'pipe' });
+  const client = new Client({ name: 'oit-formula-test', version: '0.1.0' });
+  try {
+    const { document } = await fetch(`${base}/api/documents`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-File-Name': 'lecture.pdf' }, body: '%PDF-1.7 fake' }).then(r => r.json()) as { document: { id: string } };
+    await client.connect(transport);
+    const { tools } = await client.listTools();
+    for (const name of ['get_formulas', 'save_formulas']) assert.ok(tools.some(item => item.name === name), `Missing MCP tool ${name}`);
+    const page = await tool<{ document: { pendingFormulas: number } }>(client, 'get_document', { documentId: document.id });
+    assert.equal(page.document.pendingFormulas, 2);
+
+    const first = await client.callTool({ name: 'get_formulas', arguments: { documentId: document.id, limit: 1 } });
+    assert.notEqual(first.isError, true, JSON.stringify(first.content));
+    const listed = first.structuredContent as { total: number; nextOffset?: number; formulas: Array<{ id: string; image: number; imagePath: string; pdfText?: string; page: number }> };
+    assert.equal(listed.total, 2); assert.equal(listed.nextOffset, 1);
+    const [formula] = listed.formulas;
+    assert.deepEqual([formula!.image, formula!.pdfText, formula!.page], [1, 'Gt := ∞∑ k=0 γ kRt+k+1', 1]);
+    // The model receives the image itself, and clients without image support get the same bytes as a file.
+    const images = (first.content as Array<{ type: string; data?: string; mimeType?: string }>).filter(item => item.type === 'image');
+    assert.equal(images.length, 1); assert.equal(images[0]!.mimeType, 'image/png'); assert.equal(images[0]!.data, png.toString('base64'));
+    assert.ok(formula!.imagePath.startsWith(await realpath(outputs)));
+    assert.deepEqual(await readFile(formula!.imagePath), png);
+
+    const rejected = await client.callTool({ name: 'save_formulas', arguments: { documentId: document.id, formulas: [{ id: formula!.id, latex: '\\frac{1}{' }] } });
+    assert.equal(rejected.isError, true);
+    assert.match(JSON.stringify(rejected.content), /No formulas were saved/);
+
+    const saved = await tool<{ saved: number; pending: number; total: number }>(client, 'save_formulas', { documentId: document.id, formulas: [{ id: formula!.id, latex: 'G_t := \\sum_{k=0}^{\\infty} \\gamma^k R_{t+k+1}' }] });
+    assert.deepEqual([saved.saved, saved.pending, saved.total], [1, 1, 2]);
+    const remaining = await tool<{ total: number; formulas: Array<{ page: number }> }>(client, 'get_formulas', { documentId: document.id });
+    assert.equal(remaining.total, 1); assert.equal(remaining.formulas[0]!.page, 2);
+    const checked = await tool<{ formulas: Array<{ id: string; latex?: string }> }>(client, 'get_formulas', { documentId: document.id, pendingOnly: false });
+    assert.equal(checked.formulas.find(item => item.id === formula!.id)!.latex, 'G_t := \\sum_{k=0}^{\\infty} \\gamma^k R_{t+k+1}');
+  } finally {
+    await client.close().catch(() => {});
+    api.close(); await new Promise<void>(resolve => httpServer.close(() => resolve()));
+    await rm(temporary, { recursive: true, force: true });
+  }
+});

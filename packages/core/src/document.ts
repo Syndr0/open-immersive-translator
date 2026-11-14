@@ -6,6 +6,9 @@ export type { BlockType, DocumentBlock } from './types.ts';
 /** Figures, display formulas and code are shown as-is and never sent to a provider. */
 export const isTranslatable = (block: Pick<DocumentBlock, 'type'>) => block.type !== 'code' && block.type !== 'formula' && block.type !== 'figure';
 
+/** A formula whose LaTeX is not known yet; its image is shown until an agent reads it. */
+export const isPendingFormula = (block: Pick<DocumentBlock, 'type' | 'text' | 'asset'>) => block.type === 'formula' && !block.text.trim() && !!block.asset;
+
 const CELL_SEPARATOR = /(?<!\\)\|/;
 
 /** Rows of a Markdown pipe table; the header separator row is dropped. */
