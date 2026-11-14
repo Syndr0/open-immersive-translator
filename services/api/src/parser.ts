@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import type { SourceDocument, DocumentBlock, BlockType } from '@oit/core';
 import { layoutBlocks, type PdfPage } from './pdf-text.ts';
+import type { MineruService } from './mineru.ts';
 import { ASSET_NAME, type DocumentAsset } from './store.ts';
 
 export interface ParsedDocument extends SourceDocument { assets: DocumentAsset[] }
@@ -65,7 +66,7 @@ export function htmlToText(input: string): string {
     });
 }
 
-export async function parseDocument(name: string, input: Buffer, env: NodeJS.ProcessEnv = process.env): Promise<ParsedDocument> {
+export async function parseDocument(name: string, input: Buffer, env: NodeJS.ProcessEnv = process.env, services: { mineru?: MineruService } = {}): Promise<ParsedDocument> {
   const extension = extname(name).toLowerCase();
   if (!supported.includes(extension)) throw new Error('Supported formats: PDF, TXT, Markdown, HTML and DOCX');
   if (!input.length) throw new Error('Document is empty');
@@ -74,28 +75,39 @@ export async function parseDocument(name: string, input: Buffer, env: NodeJS.Pro
   let assets: DocumentAsset[] = [];
   const warnings: string[] = [];
   let pageCount: number | undefined;
-  if (env.PARSER === 'docling' && extension === '.pdf') {
-    if (!input.subarray(0, 1024).includes(Buffer.from('%PDF-'))) throw new Error('File does not contain a PDF header');
-    const result = await docling(input, env);
-    raw = result.blocks; pageCount = result.pageCount; assets = result.assets;
-  } else if (extension === '.pdf') {
-    if (!input.subarray(0, 1024).includes(Buffer.from('%PDF-'))) throw new Error('File does not contain a PDF header');
-    const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
-    const task = getDocument({ data: new Uint8Array(input), useSystemFonts: true, verbosity: 0 });
-    const pdf = await task.promise;
-    pageCount = pdf.numPages;
-    if (pageCount > 300) { await task.destroy(); throw new Error('PDF exceeds 300-page limit'); }
+  let parser = 'basic';
+  if (extension === '.pdf' && !input.subarray(0, 1024).includes(Buffer.from('%PDF-'))) throw new Error('File does not contain a PDF header');
+  // Layout parsers from the configured one down; one that fails hands over with a note.
+  const engines = extension !== '.pdf' ? [] : env.PARSER === 'mineru' ? ['mineru', ...(env.DOCLING_PYTHON ? ['docling'] : [])] : env.PARSER === 'docling' ? ['docling'] : [];
+  for (const engine of engines) {
     try {
-      const pages: PdfPage[] = [];
-      for (let number = 1; number <= pdf.numPages; number++) {
-        const page = await pdf.getPage(number);
-        const { width, height } = page.getViewport({ scale: 1 });
-        const content = await page.getTextContent();
-        pages.push({ width, height, items: content.items.filter(item => 'str' in item) });
-      }
-      raw = layoutBlocks(pages);
-    } finally { await task.destroy(); }
-    warnings.push('Built-in PDF extraction reads the text layer only: figures, formulas and table grids need the Docling parser (PARSER=docling).');
+      if (engine === 'mineru' && !services.mineru) throw new Error('the MinerU service is not available');
+      const result = engine === 'mineru' ? await services.mineru!.parse(name, input) : await docling(input, env);
+      raw = result.blocks; pageCount = result.pageCount; assets = result.assets; parser = engine;
+      break;
+    } catch (error) {
+      warnings.push(`${engine === 'mineru' ? 'MinerU' : 'Docling'} could not read this PDF (${error instanceof Error ? error.message : 'unknown error'}), so a simpler parser was used.`);
+    }
+  }
+  if (extension === '.pdf') {
+    if (parser === 'basic') {
+      const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
+      const task = getDocument({ data: new Uint8Array(input), useSystemFonts: true, verbosity: 0 });
+      const pdf = await task.promise;
+      pageCount = pdf.numPages;
+      if (pageCount > 300) { await task.destroy(); throw new Error('PDF exceeds 300-page limit'); }
+      try {
+        const pages: PdfPage[] = [];
+        for (let number = 1; number <= pdf.numPages; number++) {
+          const page = await pdf.getPage(number);
+          const { width, height } = page.getViewport({ scale: 1 });
+          const content = await page.getTextContent();
+          pages.push({ width, height, items: content.items.filter(item => 'str' in item) });
+        }
+        raw = layoutBlocks(pages);
+      } finally { await task.destroy(); }
+      warnings.push('Built-in PDF extraction reads the text layer only: figures, formulas and table grids need the MinerU or Docling parser.');
+    }
   } else if (extension === '.docx') {
     validateDocxArchive(input);
     const mammoth = await import('mammoth');
@@ -115,7 +127,7 @@ export async function parseDocument(name: string, input: Buffer, env: NodeJS.Pro
   const sourceHash = hash(input);
   return {
     id: randomUUID(), name, format: extension.slice(1), sourceHash, pageCount,
-    blocks: raw.map((block, index) => ({ ...block, id: hash(`${sourceHash}:parser-v2:${env.PARSER || 'basic'}:${index}`).slice(0, 24) })),
+    blocks: raw.map((block, index) => ({ ...block, id: hash(`${sourceHash}:parser-v2:${parser}:${index}`).slice(0, 24) })),
     warnings, createdAt: new Date().toISOString(), assets,
   };
 }
@@ -129,7 +141,8 @@ async function docling(input: Buffer, env: NodeJS.ProcessEnv): Promise<{ blocks:
     const root = fileURLToPath(new URL('../../../', import.meta.url));
     const worker = fileURLToPath(new URL('../../../workers/docling/parse.py', import.meta.url));
     const output = await new Promise<string>((resolveOutput, reject) => {
-      const child = spawn(resolve(root, env.DOCLING_PYTHON || 'python3'), [worker, path, assetDirectory], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
+      const formulas = env.DOCLING_FORMULAS === 'local' ? 'local' : 'agent';
+      const child = spawn(resolve(root, env.DOCLING_PYTHON || 'python3'), [worker, path, assetDirectory, formulas], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], shell: false });
       let stdout = '', stderr = '', finished = false;
       const timeout = setTimeout(() => { finished = true; child.kill('SIGTERM'); reject(new Error('Docling recognition timed out after 10 minutes')); }, 600_000);
       child.stdout.on('data', chunk => { stdout += String(chunk); if (stdout.length > 20_000_000) { child.kill('SIGTERM'); } });
@@ -148,12 +161,15 @@ async function docling(input: Buffer, env: NodeJS.ProcessEnv): Promise<{ blocks:
     for (const value of parsed.blocks as Array<Record<string, unknown>>) {
       const type = value.type as BlockType;
       if (!BLOCK_TYPES.includes(type) || typeof value.text !== 'string' || value.text.length > 100_000) continue;
-      if (type === 'figure' && !(typeof value.asset === 'string' && names.has(value.asset))) continue;
+      const asset = typeof value.asset === 'string' && names.has(value.asset) ? value.asset : undefined;
+      if (type === 'figure' && !asset) continue;
+      if (type === 'formula' && !value.text.trim() && !asset) continue;
       blocks.push({ type, text: value.text,
         ...(Number.isInteger(value.page) ? { page: value.page as number } : {}),
         ...(type === 'heading' && Number.isInteger(value.level) ? { level: Math.min(6, Math.max(1, value.level as number)) } : {}),
         ...(type === 'list' && typeof value.marker === 'string' ? { marker: value.marker.slice(0, 16) } : {}),
-        ...(type === 'figure' ? { asset: value.asset as string } : {}) });
+        ...((type === 'figure' || type === 'formula') && asset ? { asset } : {}),
+        ...(type === 'formula' && asset && typeof value.hint === 'string' && value.hint.trim() ? { hint: value.hint.trim().slice(0, 2000) } : {}) });
     }
     const used = new Set(blocks.flatMap(block => block.asset ? [block.asset] : []));
     const assets = await Promise.all([...used].map(async name => ({ name, bytes: await readFile(`${assetDirectory}/${name}`) })));

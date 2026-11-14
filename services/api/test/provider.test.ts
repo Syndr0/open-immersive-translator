@@ -66,3 +66,55 @@ for (const { kind, name, expectedModel, modelOverride, expectedThink } of cases)
     } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
   });
 }
+
+/** An OpenAI-compatible stand-in that records batch sizes and how many requests overlap. */
+async function batchingService(options: { dropLastWhenLarger?: number; delayMs?: number } = {}) {
+  const sizes: number[] = [];
+  let active = 0, peak = 0;
+  const server = createServer(async (request, response) => {
+    let body = '';
+    for await (const part of request) body += String(part);
+    const { segments } = JSON.parse(JSON.parse(body).messages[1].content) as { segments: Array<{ id: string; text: string }> };
+    sizes.push(segments.length); active++; peak = Math.max(peak, active);
+    await new Promise(resolve => setTimeout(resolve, options.delayMs ?? 20));
+    active--;
+    // Long replies sometimes come back with a paragraph missing.
+    const kept = options.dropLastWhenLarger !== undefined && segments.length > options.dropLastWhenLarger ? segments.slice(0, -1) : segments;
+    response.setHeader('Content-Type', 'application/json');
+    response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ segments: kept.map(segment => ({ id: segment.id, text: `T:${segment.text}` })) }) } }] }));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  return { server, sizes, peak: () => peak, base: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1` };
+}
+const paragraphs = (count: number) => Array.from({ length: count }, (_, index) => ({ id: `p${index}`, text: `Paragraph ${index} about value functions.` }));
+
+test('hosted LLMs get batches of paragraphs, several requests at once', async () => {
+  const service = await batchingService();
+  try {
+    const provider = providerFromEnv({ TRANSLATION_PROVIDER: 'compatible', COMPATIBLE_BASE_URL: service.base, COMPATIBLE_MODEL: 'cheap-model' });
+    assert.deepEqual([provider.batch?.maxSegments, provider.concurrency], [20, 4]);
+    const result = await new TranslationBroker(provider).translate({ segments: paragraphs(110), targetLanguage: 'zh-Hans' });
+    assert.equal(result.errors.length, 0); assert.equal(result.results.length, 110);
+    assert.deepEqual(service.sizes.sort((a, b) => b - a), [20, 20, 20, 20, 20, 10]);
+    assert.equal(service.peak(), 4);
+  } finally { await new Promise<void>(resolve => service.server.close(() => resolve())); }
+});
+
+test('a batch with a missing paragraph is split and retried instead of failing every paragraph', async () => {
+  const service = await batchingService({ dropLastWhenLarger: 5 });
+  try {
+    const provider = providerFromEnv({ TRANSLATION_PROVIDER: 'compatible', COMPATIBLE_BASE_URL: service.base, COMPATIBLE_MODEL: 'cheap-model' });
+    const result = await new TranslationBroker(provider).translate({ segments: paragraphs(20), targetLanguage: 'zh-Hans' });
+    assert.equal(result.errors.length, 0);
+    assert.deepEqual(result.results.map(item => item.text), paragraphs(20).map(item => `T:${item.text}`));
+    assert.ok(service.sizes.every(size => size <= 20) && service.sizes.some(size => size <= 5));
+  } finally { await new Promise<void>(resolve => service.server.close(() => resolve())); }
+});
+
+test('local Ollama stays one request at a time; batch size and parallelism can be configured', () => {
+  const local = providerFromEnv({ TRANSLATION_PROVIDER: 'ollama' });
+  assert.deepEqual([local.batch?.maxSegments, local.concurrency], [8, 1]);
+  const tuned = providerFromEnv({ TRANSLATION_PROVIDER: 'compatible', TRANSLATION_BATCH_SEGMENTS: '110', TRANSLATION_BATCH_CHARACTERS: '60000', TRANSLATION_CONCURRENCY: '1' });
+  assert.deepEqual([tuned.batch, tuned.concurrency], [{ maxSegments: 100, maxCharacters: 60000 }, 1]);
+  assert.equal(new TranslationBroker(tuned)['concurrency'], 1);
+});

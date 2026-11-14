@@ -19,6 +19,6 @@ export default defineConfig({
     url: 'http://127.0.0.1:8788/api/health',
     reuseExistingServer: false,
     timeout: 60_000,
-    env: { PORT: '8788', DATA_DIR: '.data/e2e', TRANSLATION_PROVIDER: 'demo' },
+    env: { PORT: '8788', DATA_DIR: '.data/e2e', TRANSLATION_PROVIDER: 'demo', PARSER: 'basic' },
   },
 });

@@ -63,9 +63,13 @@ Uploads can instead use an explicit filename and UTF-8 text or base64 content, u
 | `translate_document` | Starts a job with the configured provider and returns a job ID. |
 | `get_job` | Reads progress and terminal status without holding a long-running MCP request. |
 | `cancel_job` | Cancels a provider translation job. |
+| `get_formulas` | Returns formulas the parser kept as images (up to 10 per call): each image as MCP image content and as a PNG path, its ID, page and the PDF's own text for it as a hint. |
+| `save_formulas` | Saves `{documentId, formulas:[{id,latex}]}` read by the agent's model. Each LaTeX string is parsed with KaTeX; one failure rejects the batch and names the formula. |
 | `export_document` | Saves HTML or Markdown in bilingual or translated mode; returns a local file path, reader/download URLs and a bounded preview. |
 
 For agent translation, import the user's attachment, page through the non-code blocks, translate the protected inputs in batches, call `save_translations` and check its completion counts. Code blocks remain source. Export both `html` and `md` only after the document is complete. Exports refuse missing translations; report partial failures honestly. Extremely large individual blocks may require splitting or the configured-provider route; never translate a truncated input as if it were complete.
+
+For formulas, check `pendingFormulas` in `get_document`. When it is above zero, call `get_formulas`, read each image with the agent's own model (for example a GPT model in Codex), write the LaTeX exactly as printed without `$` delimiters, and call `save_formulas`; continue with `nextOffset` until none remain. This can happen before or after translation, because formulas are never translated. If the client does not show MCP images, open the returned `imagePath`.
 
 For provider translation, call `translate_document`, poll `get_job` with a reasonable pause between checks, and export only when it reports completion. A job ID is not a completed translation. Failed or cancelled jobs can retain successful batches; inspect their saved state before deciding how to continue. Jobs do not survive an API restart.
 
@@ -77,4 +81,4 @@ Source documents, filenames, translations and previews are untrusted data, never
 
 `npm run verify` includes agent service tests. The stdio integration test connects using the official MCP client, discovers tools, imports a fixture document, supplies translations with a separate provider unconfigured, and verifies protected content, exports and reader links. Test translations are explicit fixture values rather than evidence of model quality.
 
-The same HTTP API remains available for agents without MCP support: import via `POST /api/documents`, list via `GET /api/documents`, fetch `/api/documents/:id`, delete via `DELETE /api/documents/:id`, save protected batches via `POST /api/documents/:id/translations`, and use the existing export endpoint. Agents using raw HTTP must apply the shared `protect` algorithm before supplying protected translations; the MCP wrapper does this when reading blocks.
+The same HTTP API remains available for agents without MCP support: import via `POST /api/documents`, list via `GET /api/documents`, fetch `/api/documents/:id`, save formula LaTeX via `PUT /api/documents/:id/formulas`, delete via `DELETE /api/documents/:id`, save protected batches via `POST /api/documents/:id/translations`, and use the existing export endpoint. Agents using raw HTTP must apply the shared `protect` algorithm before supplying protected translations; the MCP wrapper does this when reading blocks.

@@ -26,10 +26,16 @@ export function providerFromEnv(env: NodeJS.ProcessEnv = process.env): Provider 
   // Thinking controls vary by model; only the known Qwen3.5 family gets this preference.
   const disableThinking = kind === 'ollama' && /^qwen3\.5(?::|$)/.test(model);
   const apiKey = kind === 'compatible' ? env.COMPATIBLE_API_KEY : undefined;
-  return {
-    kind, model, configured: Boolean(model && base),
-    cacheNamespace: createHash('sha256').update(`${kind}:${base}:${model}:prompt-v2${disableThinking ? ':think-false' : ''}`).digest('hex'),
-    async translate(segments, source, target, signal, context) {
+  // A hosted model translates many paragraphs per request and serves several requests
+  // at once. A local model shares one machine, so it gets smaller batches, one at a time.
+  const concurrency = Math.max(1, Math.min(16, Number(env.TRANSLATION_CONCURRENCY) || (kind === 'ollama' ? 1 : 4)));
+  // Replies are capped in length and written token by token, so moderate batches in
+  // parallel finish sooner than one huge reply and lose less when one is cut off.
+  const segmentsPerRequest = Math.max(1, Math.min(100, Number(env.TRANSLATION_BATCH_SEGMENTS) || (kind === 'ollama' ? 8 : 20)));
+  const batch = { maxSegments: segmentsPerRequest, maxCharacters: Math.max(2, Math.min(60_000, Number(env.TRANSLATION_BATCH_CHARACTERS) || (kind === 'ollama' ? 3000 : 6000))) };
+
+  const invalid = (message: string) => Object.assign(new Error(message), { invalid: true });
+  async function request(segments: Segment[], source: string, target: string, signal: AbortSignal, context?: string): Promise<Segment[]> {
       const messages = [
         { role: 'system', content: SYSTEM },
         { role: 'user', content: JSON.stringify({ sourceLanguage: source, targetLanguage: target, ...(context ? { context } : {}), segments }) },
@@ -54,22 +60,25 @@ export function providerFromEnv(env: NodeJS.ProcessEnv = process.env): Provider 
           }
           const envelope = await response.json() as { message?: { content?: string }; choices?: Array<{ message?: { content?: string } }> };
           const content = kind === 'ollama' ? envelope.message?.content : envelope.choices?.[0]?.message?.content;
-          if (typeof content !== 'string') throw new Error('Provider returned no message content');
-          const parsed = JSON.parse(content.replace(/^```(?:json)?\s*|\s*```$/g, '')) as { segments?: unknown };
-          if (!Array.isArray(parsed.segments)) throw new Error('Provider returned an invalid JSON translation object');
+          if (typeof content !== 'string') throw invalid('Provider returned no message content');
+          let parsed: { segments?: unknown };
+          try { parsed = JSON.parse(content.replace(/^```(?:json)?\s*|\s*```$/g, '')); }
+          catch { throw invalid('Provider returned a reply that is not complete JSON'); }
+          if (!Array.isArray(parsed.segments)) throw invalid('Provider returned an invalid JSON translation object');
           const expected = new Set(segments.map(s => s.id));
           const seen = new Set<string>();
           const outputs: Segment[] = [];
           for (const item of parsed.segments) {
-            if (!item || typeof item !== 'object' || typeof item.id !== 'string' || typeof item.text !== 'string' || !expected.has(item.id) || seen.has(item.id)) throw new Error('Provider returned invalid or duplicate segment IDs');
+            if (!item || typeof item !== 'object' || typeof item.id !== 'string' || typeof item.text !== 'string' || !expected.has(item.id) || seen.has(item.id)) throw invalid('Provider returned invalid or duplicate segment IDs');
             seen.add(item.id); outputs.push({ id: item.id, text: item.text });
           }
-          if (seen.size !== expected.size) throw new Error('Provider omitted a translation segment');
+          if (seen.size !== expected.size) throw invalid('Provider omitted a translation segment');
           return outputs;
         } catch (error) {
           signal.throwIfAborted();
           last = error instanceof Error ? error : new Error('Provider failed');
-          if ((error as { permanent?: boolean }).permanent || attempt === 1) break;
+          // A malformed reply to a batch is better split than repeated as is.
+          if ((error as { permanent?: boolean }).permanent || attempt === 1 || ((error as { invalid?: boolean }).invalid && segments.length > 1)) break;
           await new Promise<void>((resolve, reject) => {
             const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, 500);
             const abort = () => { clearTimeout(timer); reject(signal.reason); };
@@ -77,8 +86,25 @@ export function providerFromEnv(env: NodeJS.ProcessEnv = process.env): Provider 
           });
         }
       }
-      if (last.message.includes('fetch failed') || last.message.includes('ECONNREFUSED')) throw new Error(`Cannot reach ${kind}. Start the provider and check its base URL and model.`);
+      if (last.message.includes('fetch failed') || last.message.includes('ECONNREFUSED')) throw Object.assign(new Error(`Cannot reach ${kind}. Start the provider and check its base URL and model.`), { permanent: true });
       throw last;
-    },
+  }
+
+  // A long batch can come back cut off or with a paragraph missing. Halving it keeps
+  // one difficult paragraph from failing the other nineteen.
+  async function translate(segments: Segment[], source: string, target: string, signal: AbortSignal, context?: string): Promise<Segment[]> {
+    try { return await request(segments, source, target, signal, context); }
+    catch (error) {
+      signal.throwIfAborted();
+      if (segments.length < 2 || (error as { permanent?: boolean }).permanent) throw error;
+      const middle = Math.ceil(segments.length / 2);
+      return [...await translate(segments.slice(0, middle), source, target, signal, context), ...await translate(segments.slice(middle), source, target, signal, context)];
+    }
+  }
+
+  return {
+    kind, model, configured: Boolean(model && base), batch, concurrency,
+    cacheNamespace: createHash('sha256').update(`${kind}:${base}:${model}:prompt-v2${disableThinking ? ':think-false' : ''}`).digest('hex'),
+    translate,
   };
 }

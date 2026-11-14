@@ -176,6 +176,9 @@ select { appearance: none; min-height: 36px; padding: 0 34px 0 14px; border: 1px
 .block-reference p { font-size: 14px !important; line-height: 1.55; }
 .block-figure { margin: 32px 0 12px; text-align: center; }
 .figure-image { display: block; max-width: 100%; height: auto; margin: 0 auto; border-radius: 8px; background: #fff; }
+.formula-image { display: block; max-width: 100%; height: auto; margin: 0 auto; border-radius: 6px; background: #fff; }
+.formula-note { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; padding: 10px 16px; border-bottom: 1px solid var(--border); color: var(--text-secondary); font-size: 14px; }
+.formula-note .text-button { color: var(--text); }
 .math-display { display: block; margin: 8px 0; overflow-x: auto; overflow-y: hidden; text-align: center; }
 .block-formula { margin: 20px 0; }
 .math-inline { white-space: nowrap; }

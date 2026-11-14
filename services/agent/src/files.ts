@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { open, realpath, stat, mkdir, unlink } from 'node:fs/promises';
+import { open, realpath, rename, stat, mkdir, unlink } from 'node:fs/promises';
 import { basename, isAbsolute, relative, resolve, sep, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import * as z from 'zod/v4';
@@ -82,4 +82,20 @@ export async function saveExport(config: AgentConfig, inputName: string, extensi
   catch (error) { await handle.close(); await unlink(path).catch(() => {}); throw error; }
   finally { await handle.close(); }
   return { path, fileName };
+}
+
+/** A formula image as a file, for agent clients that do not pass images through MCP. */
+export async function saveFormulaImage(config: AgentConfig, documentId: string, blockId: string, extension: 'png' | 'jpg', content: Buffer, signal: AbortSignal): Promise<string> {
+  signal.throwIfAborted();
+  if (!/^[0-9a-f-]{36}$/.test(documentId) || !/^[A-Za-z0-9_-]{1,100}$/.test(blockId)) throw new Error('Invalid document or formula ID.');
+  await mkdir(join(config.outputDirectory, 'formulas', documentId), { recursive: true });
+  const directory = await realpath(join(config.outputDirectory, 'formulas', documentId));
+  const path = join(directory, `${blockId}.${extension}`);
+  // Replace atomically so a reader never sees half an image.
+  const temporary = join(directory, `.${blockId}-${randomUUID()}.${extension}`);
+  const handle = await open(temporary, 'wx', 0o600);
+  try { await handle.writeFile(content, { signal }); }
+  finally { await handle.close(); }
+  await rename(temporary, path).catch(async error => { await unlink(temporary).catch(() => {}); throw error; });
+  return path;
 }

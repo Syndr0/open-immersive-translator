@@ -19,8 +19,8 @@ function tableHtml(text: string, translation?: string) {
 
 function blockHtml(block: DocumentBlock, text: string, image?: string) {
   if (block.type === 'code') return `<pre><code>${escapeHtml(text)}</code></pre>`;
-  if (block.type === 'formula') return math(text, true);
-  if (block.type === 'figure') return image ? `<img src="data:image/png;base64,${image}" alt="">` : '';
+  if (block.type === 'formula') return text.trim() ? math(text, true) : image ? `<img src="${image}" alt="">` : '';
+  if (block.type === 'figure') return image ? `<img src="${image}" alt="">` : '';
   if (block.type === 'table') return tableHtml(text);
   if (block.type === 'heading') { const level = Math.max(1, Math.min(6, block.level || 2)); return `<h${level}>${rich(text)}</h${level}>`; }
   return `<p>${rich(text)}</p>`;
@@ -47,8 +47,8 @@ export function exportDocument(record: DocumentRecord, language: string, format:
     return `# ${record.document.name}\n\n` + record.document.blocks.map(block => {
       const image = block.asset ? images.get(block.asset) : undefined;
       const render = (text: string) => block.type === 'heading' ? `${'#'.repeat(block.level || 2)} ${text}`
-        : block.type === 'code' ? `\`\`\`\n${text}\n\`\`\`` : block.type === 'formula' ? `$$\n${text}\n$$`
-        : block.type === 'figure' ? (image ? `![](data:image/png;base64,${image})` : '')
+        : block.type === 'code' ? `\`\`\`\n${text}\n\`\`\`` : block.type === 'formula' ? (text.trim() ? `$$\n${text}\n$$` : image ? `![](${image})` : '')
+        : block.type === 'figure' ? (image ? `![](${image})` : '')
         : block.type === 'list' ? `${block.marker ?? '-'} ${text}` : text;
       if (!isTranslatable(block)) return render(block.text);
       const target = translation?.units[block.id];

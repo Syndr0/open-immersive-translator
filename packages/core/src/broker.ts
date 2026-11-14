@@ -15,7 +15,7 @@ export class MemoryCache implements TranslationCache {
 export class TranslationBroker {
   private active = 0;
   private waiters: Array<{ ready: () => void; abort: () => void; signal: AbortSignal }> = [];
-  constructor(readonly provider: Provider, private cache: TranslationCache = new MemoryCache(), private concurrency = 2) {}
+  constructor(readonly provider: Provider, private cache: TranslationCache = new MemoryCache(), private concurrency = Math.max(1, Math.min(16, provider.concurrency ?? 2))) {}
 
   async translate(request: TranslationRequest, signal: AbortSignal = new AbortController().signal, onProgress?: (snapshot: TranslationResponse) => void): Promise<TranslationResponse> {
     const results = new Map<string, TranslationResult>();

@@ -3,7 +3,8 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { DocumentTranslation, SourceDocument, TranslationCache } from '@oit/core';
 
-export const ASSET_NAME = /^[a-z0-9-]{1,64}\.png$/;
+export const ASSET_NAME = /^[a-z0-9-]{1,64}\.(?:png|jpg)$/;
+export const assetMimeType = (name: string) => name.endsWith('.jpg') ? 'image/jpeg' : 'image/png';
 export interface DocumentAsset { name: string; bytes: Buffer }
 
 export interface DocumentSummary {

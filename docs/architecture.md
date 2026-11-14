@@ -28,11 +28,15 @@ The reader and extension share deliberate, user-triggered setup prompts. The loc
 
 ## Document parsing
 
+LLM providers (Ollama and OpenAI-compatible APIs) receive many paragraphs per request (20 by default, 8 for local Ollama) and several requests run at once (4 for hosted APIs, 1 for Ollama), configurable with `TRANSLATION_BATCH_SEGMENTS`, `TRANSLATION_BATCH_CHARACTERS` and `TRANSLATION_CONCURRENCY`. Moderate parallel batches finish sooner than one large reply, which is capped in length and written token by token; a batch whose reply is cut off or misses a paragraph is split in half and retried, so one difficult paragraph does not fail the rest. On Lecture 3 (110 paragraphs) against a stand-in writing 100 tokens per second, this took 17 s, against 61 s one paragraph at a time and 41 s in a single request.
+
 Documents become typed blocks: `heading`, `paragraph`, `list` (with its marker), `caption`, `footnote`, `reference`, `table` (a Markdown pipe table), `formula` (LaTeX), `figure` (a stored PNG asset) and `code`. Figures, formulas and code are never sent to a provider. Tables are translated cell by cell; cells holding only names, numbers or math are kept. Every provider request for a document carries its title and abstract as terminology context.
 
 Basic parsing supports text-layer PDF, TXT, Markdown, HTML and DOCX. For PDFs, a layout pass over PDF.js text positions recovers headings (font size and numbering), two-column reading order, lists, captions, footnotes and one block per reference; it rejoins hyphenated words and paragraphs split by page breaks, and drops page numbers, running headers and rotated margin text. It cannot see figures, formulas or table grids. HTML is reduced to safe readable content; importing a document does not execute its scripts.
 
-The optional Python worker runs Docling with table structure, formula-to-LaTeX enrichment and figure extraction, and emits the same typed blocks plus figure PNGs (formulas it cannot read become images). Pages without a text layer are recognized with OCR. Install `workers` requirements in a Python environment and configure:
+The recommended PDF parser is MinerU, run as its own local service that the API starts with the models preloaded (`services/api/src/mineru.ts`). Its structured output becomes the same blocks: inline math as `$…$` in prose, display formulas as LaTeX with a cropped image kept for agent review, HTML tables with merged cells as grids, and boxed theorems that layout analysis labels as code or one-column tables turned back into prose. If it fails, the import falls back to Docling, then to the built-in parser, with a note on the document.
+
+The optional Python worker runs Docling with table structure and figure extraction, and emits the same typed blocks plus PNG images. Display formulas are kept as images by default (a formula block with empty LaTeX, an image asset and the PDF text as a hint) because Docling's formula model is too slow on typical CPUs; an AI agent reads them through the MCP service and the API validates its LaTeX with KaTeX. `DOCLING_FORMULAS=local` runs Docling's model instead. Pages without a text layer are recognized with OCR. Install `workers` requirements in a Python environment and configure:
 
 ```dotenv
 PARSER=docling

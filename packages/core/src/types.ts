@@ -16,8 +16,10 @@ export interface TranslationResponse {
   model: string;
 }
 /**
- * figure: `asset` names a stored image; formula: `text` is LaTeX; table: `text`
- * is a Markdown pipe table; list: `marker` is the original bullet or number.
+ * figure: `asset` names a stored image; formula: `text` is LaTeX, or empty while
+ * only its cropped `asset` image is known (`hint` then holds the PDF's own text
+ * for it); table: `text` is a Markdown pipe table; list: `marker` is the original
+ * bullet or number.
  */
 export type BlockType = 'heading' | 'paragraph' | 'list' | 'caption' | 'reference' | 'footnote' | 'table' | 'code' | 'formula' | 'figure';
 export interface DocumentBlock {
@@ -28,6 +30,7 @@ export interface DocumentBlock {
   level?: number;
   marker?: string;
   asset?: string;
+  hint?: string;
 }
 export interface SourceDocument {
   id: string;
@@ -58,6 +61,8 @@ export interface Provider {
   cacheNamespace?: string;
   /** Opt in to identified multi-segment calls; maxCharacters must be at least 2. */
   batch?: { maxSegments: number; maxCharacters: number };
+  /** Requests the provider serves well at once; the broker defaults to 2. */
+  concurrency?: number;
   translate(segments: Segment[], source: string, target: string, signal: AbortSignal, context?: string): Promise<ProviderResult[]>;
 }
 export interface TranslationCache {
