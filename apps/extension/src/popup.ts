@@ -66,6 +66,18 @@ translate.addEventListener('click', () => { void action(async () => {
 }); });
 element('restore').addEventListener('click', () => { void action(() => send({ type: 'oit:restore-tab', tabId })); });
 element('reader').addEventListener('click', () => { void action(() => send({ type: 'oit:reader' })); });
+const showLauncher = element<HTMLButtonElement>('show-launcher');
+async function updateLauncher(): Promise<void> {
+  if (tabId === undefined || !chrome.tabs?.sendMessage) return;
+  // Only a page with the launcher script answers; other pages leave the link hidden.
+  const reply = await chrome.tabs.sendMessage(tabId, { type: 'oit:launcher-visibility' }, { frameId: 0 }).catch(() => undefined);
+  showLauncher.hidden = reply?.hidden !== true;
+}
+showLauncher.addEventListener('click', () => { void (async () => {
+  if (tabId === undefined) return;
+  await chrome.tabs.sendMessage(tabId, { type: 'oit:show-launcher' }, { frameId: 0 }).catch(() => undefined);
+  await updateLauncher();
+})(); });
 element('settings').addEventListener('click', () => { void chrome.runtime.openOptionsPage(); });
 
 void (async () => {
@@ -76,6 +88,7 @@ void (async () => {
   language.value = settings.targetLanguage;
   await updateConnection();
   await updateStatus().catch(() => {});
+  await updateLauncher().catch(() => {});
   setInterval(() => { void updateStatus().catch(() => {}); }, 1200);
   setInterval(() => { void updateConnection(); }, 3000);
 })().catch(cause => { error.textContent = String(cause); });

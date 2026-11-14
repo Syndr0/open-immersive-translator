@@ -6,7 +6,7 @@ An independent, MIT-licensed implementation of paragraph-based website translati
 
 ## What works
 
-- **Websites:** use a right-side Translate/Restore control, show completed paragraphs progressively in the page's typography, retain the original page, and handle newly inserted content.
+- **Websites:** use a small edge button that toggles translation and the original page, can be dragged or hidden, show completed paragraphs progressively in the page's typography, retain the original page, and handle newly inserted content.
 - **Interface:** switch between Chinese and English with the **中 / EN** control. Your choice is saved separately from the document translation language.
 - **Agent help:** select **Copy for your agent** for guided website/provider setup, or attach a document to your agent and get bilingual files back through the local MCP service. The agent can supply translations using its own model without a separate translation API key.
 - **Documents:** import text PDFs, DOCX, HTML, Markdown and TXT; translate blocks; edit translations; export bilingual HTML/Markdown or print to PDF.
@@ -115,8 +115,8 @@ The compatible adapter sends chat-completion requests and expects JSON containin
 1. Run `npm run build` and keep the API running.
 2. Open `chrome://extensions`, enable **Developer mode**, and select **Load unpacked**.
 3. Choose this repository's **`apps/extension/dist`** folder.
-4. Open or refresh a normal website and click **Translate** on its right edge. Use the extension popup to choose a language.
-5. Use **Restore original page** to remove the bilingual additions; the Translate control remains available. The extension's backend and Document app both default to `http://127.0.0.1:8787`. If you use the separate development reader, change Document app to `http://127.0.0.1:5173` in extension settings.
+4. Open or refresh a normal website and click the **A文** button on its right edge. Use the extension popup to choose a language.
+5. Click the button again to remove the bilingual additions. Drag it to move it; use the **×** that appears on hover to hide it, and **Show page button** in the toolbar popup to bring it back. The extension's backend and Document app both default to `http://127.0.0.1:8787`. If you use the separate development reader, change Document app to `http://127.0.0.1:5173` in extension settings.
 
 After rebuilding an installed unpacked extension, click **Reload** on its card in `chrome://extensions`, accept any new site-access prompt, then refresh the website.
 

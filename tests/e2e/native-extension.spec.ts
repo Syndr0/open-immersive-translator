@@ -91,14 +91,14 @@ test('native MV3 launcher recovers offline, handles root mutations and waits cor
     await launcher.getByRole('button', { name: 'Translate this page', exact: true }).click();
     await expect(page.locator('#near-native + [data-oit-owned="translation"]')).toContainText('[Demo');
     await expect(launcher.getByRole('status')).toHaveText('1 of 2 paragraphs translated · 1 remaining. Scroll to translate more.');
-    await expect(launcher.locator('.label')).toHaveText('Ready');
-    await expect(launcher.locator('[data-action="translate"]')).toHaveAttribute('aria-busy', 'false');
+    await expect(launcher.locator('.rail')).toHaveAttribute('data-state', 'waiting');
+    await expect(launcher.locator('[data-action="main"]')).toHaveAttribute('aria-busy', 'false');
     await expect(launcher.locator('.rail')).not.toHaveClass(/working/);
     await expect(page.locator('[data-oit-pending="true"]')).toHaveCount(0);
     await page.locator('#far-native').scrollIntoViewIfNeeded();
     await expect(page.locator('#far-native + [data-oit-owned="translation"]')).toContainText('[Demo');
     await expect(launcher.getByRole('status')).toHaveText('2 of 2 paragraphs translated');
-    await expect(launcher.locator('.label')).toHaveText('Translated');
+    await expect(launcher.locator('.rail')).toHaveAttribute('data-state', 'translated');
     await launcher.getByRole('button', { name: 'Restore original page' }).click();
     expect(await page.locator('main').innerHTML()).toBe(waitingOriginal);
 
@@ -111,8 +111,8 @@ test('native MV3 launcher recovers offline, handles root mutations and waits cor
     await page.goto('https://example.org/native-language-filter');
     const inputCount = inputs.length;
     await launcher.getByRole('button', { name: 'Translate this page', exact: true }).click();
-    await expect(launcher.getByRole('status')).toHaveText('0 of 1 paragraphs translated · 1 unchanged');
-    await expect(launcher.locator('.label')).toHaveText('Unchanged');
+    await expect(launcher.getByRole('status')).toHaveText('0 of 1 paragraphs translated · 1 already in the target language');
+    await expect(launcher.locator('.rail')).toHaveAttribute('data-state', 'current');
     await expect(page.locator('[data-oit-owned="translation"]')).toHaveCount(0);
     expect(inputs.length).toBe(inputCount);
     await expect(page.locator('#already-english')).toHaveText(english);
@@ -124,7 +124,7 @@ test('native MV3 launcher recovers offline, handles root mutations and waits cor
       return document.querySelector('main')!.innerHTML;
     });
     await expect(page.locator('#foreign-native + [data-oit-owned="translation"]')).toContainText('[Demo');
-    await expect(launcher.getByRole('status')).toHaveText('1 of 2 paragraphs translated · 1 unchanged');
+    await expect(launcher.getByRole('status')).toHaveText('1 of 2 paragraphs translated · 1 already in the target language');
     expect(inputs.length).toBe(inputCount + 1);
     expect(inputs.at(-1)!.text).not.toContain(english);
     await launcher.getByRole('button', { name: 'Restore original page' }).click();
