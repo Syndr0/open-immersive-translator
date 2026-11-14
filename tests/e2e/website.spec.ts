@@ -204,7 +204,7 @@ test('automatic launcher is passive until a trusted Translate click and remains 
   await expect(page.locator('[data-oit-owned="translation"]')).toHaveCount(0);
   await page.evaluate(() => {
     const host = document.querySelector('[data-oit-launcher]')!;
-    (host.shadowRoot!.querySelector('[data-action="translate"]') as HTMLButtonElement).click();
+    (host.shadowRoot!.querySelector('[data-action="main"]') as HTMLButtonElement).click();
   });
   await page.waitForTimeout(150);
   expect(starts).toBe(0);
@@ -237,22 +237,100 @@ test('long-page translation stops spinning while offscreen content waits and res
   await launcher.getByRole('button', { name: 'Translate this page', exact: true }).click();
   await expect(page.locator('#near + [data-oit-owned="translation"]')).toContainText('[Demo');
   await expect(launcher.getByRole('status')).toHaveText('1 of 2 paragraphs translated · 1 remaining. Scroll to translate more.');
-  await expect(launcher.locator('.label')).toHaveText('Ready');
+  await expect(launcher.locator('.rail')).toHaveAttribute('data-state', 'waiting');
   await expect(launcher.locator('.rail')).not.toHaveClass(/working/);
-  await expect(launcher.locator('[data-action="translate"]')).toHaveAttribute('aria-busy', 'false');
+  await expect(launcher.locator('[data-action="main"]')).toHaveAttribute('aria-busy', 'false');
   await expect(page.locator('[data-oit-pending="true"]')).toHaveCount(0);
   expect(starts).toBe(1);
   try {
     await page.locator('#far').scrollIntoViewIfNeeded();
     await expect.poll(() => starts).toBe(2);
-    await expect(launcher.locator('.label')).toHaveText('Translating');
-    await expect(launcher.locator('[data-action="translate"]')).toHaveAttribute('aria-busy', 'true');
+    await expect(launcher.locator('.rail')).toHaveAttribute('data-state', 'translating');
+    await expect(launcher.locator('[data-action="main"]')).toHaveAttribute('aria-busy', 'true');
   } finally { release(); }
   await expect(page.locator('#far + [data-oit-owned="translation"]')).toContainText('[Demo');
   await expect(launcher.getByRole('status')).toHaveText('2 of 2 paragraphs translated');
-  await expect(launcher.locator('.label')).toHaveText('Translated');
-  await expect(launcher.locator('[data-action="translate"]')).toHaveAttribute('aria-busy', 'false');
+  await expect(launcher.locator('.rail')).toHaveAttribute('data-state', 'translated');
+  await expect(launcher.locator('[data-action="main"]')).toHaveAttribute('aria-busy', 'false');
   await launcher.getByRole('button', { name: 'Restore original page' }).click();
   await expect(page.locator('[data-oit-owned="translation"]')).toHaveCount(0);
   expect(await page.locator('main').innerHTML()).toBe(original);
+});
+
+test('the page button reveals details on hover, drags to the other edge and hides on a site', async ({ page }) => {
+  await page.route('**/launcher-placement-page', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><html lang="en"><body><main><p>Placement controls should stay out of the way.</p></main></body></html>' }));
+  await installChromeTransport(page);
+  await page.setViewportSize({ width: 1000, height: 700 });
+  await page.goto('/launcher-placement-page');
+  await installBuiltTranslator(page);
+  const launcher = page.locator('[data-oit-launcher]');
+  const main = launcher.locator('[data-action="main"]');
+  await expect(main).toHaveAccessibleName('Translate this page');
+  const box = (await main.boundingBox())!;
+  // Edge-attached and compact: a 40px-tall tab, flush with the right edge.
+  expect(box.width).toBe(46); expect(box.height).toBe(40);
+  expect(box.x + box.width).toBe(1000);
+  await expect(launcher.locator('.panel')).toBeHidden();
+  await main.hover();
+  await expect(launcher.locator('.panel')).toBeVisible();
+  await expect(launcher.locator('.rail')).toHaveAttribute('data-state', 'idle');
+  await page.mouse.move(500, 300);
+  await expect(launcher.locator('.panel')).toBeHidden();
+
+  // A drag past 6px moves the button without translating, then snaps to the nearer edge.
+  let starts = 0;
+  await page.route('**/api/translation-jobs', async route => { starts++; await route.continue(); });
+  await page.mouse.move(box.x + 20, box.y + 20);
+  await page.mouse.down();
+  await page.mouse.move(300, 200, { steps: 6 });
+  await expect(launcher.locator('.rail')).toHaveClass(/dragging/);
+  await page.mouse.up();
+  const moved = (await main.boundingBox())!;
+  expect(moved.x).toBe(0);
+  expect(moved.y).toBe(180);
+  await expect(launcher.locator('.rail')).toHaveClass(/left/);
+  await page.waitForTimeout(150);
+  expect(starts).toBe(0);
+  await expect(page.locator('[data-oit-owned="translation"]')).toHaveCount(0);
+  // A normal click still translates, and the panel opens toward the page.
+  await main.click();
+  await expect(page.locator('[data-oit-owned="translation"]')).toHaveCount(1);
+  expect(starts).toBe(1);
+  // Translated is shown by a check on the icon, not by text.
+  await expect(launcher.locator('.rail')).toHaveAttribute('data-state', 'translated');
+  await expect(launcher.locator('.badge svg')).toBeVisible();
+  await expect(launcher.locator('.panel')).toBeVisible();
+  await expect(launcher.locator('.panel')).toHaveText('');
+  const panel = (await launcher.locator('.panel').boundingBox())!;
+  expect(panel.x).toBeGreaterThan(46);
+
+  // Hide asks where, then removes the button from the page.
+  await launcher.getByRole('button', { name: 'Hide button' }).click();
+  await expect(launcher.getByRole('button', { name: 'Hide everywhere' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(launcher.getByRole('button', { name: 'Hide everywhere' })).toBeHidden();
+  await main.hover();
+  await expect(launcher.getByRole('button', { name: 'Translate again' })).toBeVisible();
+  await launcher.getByRole('button', { name: 'Hide button' }).click();
+  await launcher.getByRole('button', { name: /^Hide on / }).click();
+  await expect(launcher).toHaveCount(0);
+  // Translation stays until the reader restores it from the toolbar.
+  await expect(page.locator('[data-oit-owned="translation"]')).toHaveCount(1);
+});
+
+test('keyboard focus opens the panel and Escape closes it', async ({ page }) => {
+  await page.route('**/launcher-keyboard-page', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><html lang="en"><body><main><a href="#top">First link</a></main></body></html>' }));
+  await installChromeTransport(page);
+  await page.goto('/launcher-keyboard-page');
+  await installBuiltTranslator(page);
+  const launcher = page.locator('[data-oit-launcher]');
+  await expect(launcher).toHaveCount(1);
+  await page.keyboard.press('Tab'); await page.keyboard.press('Tab');
+  await expect(launcher.getByRole('button', { name: 'Translate this page', exact: true })).toBeFocused();
+  await expect(launcher.locator('.panel')).toBeVisible();
+  await page.keyboard.press('Tab');
+  await expect(launcher.getByRole('button', { name: 'Hide button' })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(launcher.locator('.panel')).toBeHidden();
+  await expect(launcher.getByRole('button', { name: 'Translate this page', exact: true })).toBeFocused();
 });
