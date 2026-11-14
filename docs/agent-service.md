@@ -42,6 +42,8 @@ Other MCP clients use a stdio entry with `command: "node"`, `args: ["/absolute/p
 
 The launcher quietly reads the repository-root `.env`, while explicit process environment values take precedence.
 
+The translation service can also be chosen at runtime, and a saved choice overrides `.env`. Check `GET /api/settings` (`source` is `saved` or `environment`; keys are reported only as `hasApiKey`). Change it with `PUT /api/settings/provider`, for example `{"kind":"ollama","ollama":{"baseUrl":"http://127.0.0.1:11434","model":"qwen3.5:2b"}}`; kinds are `google-free`, `google`, `ollama`, `compatible` and `codex`. `POST /api/settings/provider/test` tries a choice with one sentence without saving it, and `DELETE /api/settings/provider` returns to the `.env` configuration. If you edit `.env` while `source` is `saved`, the saved choice still wins.
+
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `OIT_API_URL` | `http://127.0.0.1:8787` | Existing API and production reader origin. HTTP loopback origins only; redirects are rejected. |

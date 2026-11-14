@@ -6,13 +6,14 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync, readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { TranslationBroker, assembleTranslation, documentContext, isPendingFormula, isTranslatable, protect, restore, translationSegments, type Provider, type TranslationJob } from '@oit/core';
+import { MemoryCache, TranslationBroker, assembleTranslation, documentContext, isPendingFormula, isTranslatable, protect, restore, translationSegments, type Provider, type TranslationJob } from '@oit/core';
 import { Store, assetMimeType } from './store.ts';
 import { parseDocument } from './parser.ts';
 import { MineruService } from './mineru.ts';
 import { providerFromEnv } from './provider.ts';
 import { exportDocument } from './export.ts';
 import katex from 'katex';
+import { SettingsFile, listModels, mergeProviderSettings, providerInput, publicProviderSettings, settingsFromEnv, settingsToEnv, type ProviderSettings } from './settings.ts';
 
 const language = z.string().trim().min(2).max(60).regex(/^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$/, 'Use a language tag such as en, zh-Hans or auto');
 const requestSchema = z.object({
@@ -30,8 +31,20 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
   await store.initialize();
   const mineru = new MineruService(env, repoRoot, resolve(store.directory, 'mineru'));
   mineru.warm();
-  const provider = options.provider || providerFromEnv(env);
-  const broker = new TranslationBroker(provider, store);
+  // The service chosen in the app wins over the environment and can change while running.
+  const settingsFile = new SettingsFile(store.directory);
+  let saved = options.provider ? undefined : await settingsFile.load();
+  let provider = options.provider || providerFromEnv(env);
+  if (saved) {
+    try { provider = providerFromEnv(settingsToEnv(saved, env)); }
+    catch { saved = undefined; }
+  }
+  let broker = new TranslationBroker(provider, store);
+  const providerSettings = (): ProviderSettings => saved ?? settingsFromEnv(env);
+  const settingsView = () => ({
+    active: { kind: provider.kind, model: provider.model, configured: provider.configured },
+    source: saved ? 'saved' : 'environment', provider: publicProviderSettings(providerSettings()),
+  });
   const jobs = new Map<string, TranslationJob>();
   const controllers = new Map<string, AbortController>();
   const generations = new Map<string, number>();
@@ -62,6 +75,46 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
   }
 
   app.get('/api/health', (_request, response) => response.json({ ok: true, version, provider: { kind: provider.kind, model: provider.model, configured: provider.configured } }));
+  // Settings can redirect where text and API keys are sent, so only the app's own
+  // pages and local tools may change them; browser extensions may not.
+  const appOnly: express.RequestHandler = (request, response, next) => {
+    if (request.get('Origin')?.startsWith('chrome-extension://')) { response.status(403).json({ error: 'Change translation settings in the app' }); return; }
+    next();
+  };
+  const candidateProvider = (input: unknown) => {
+    const settings = mergeProviderSettings(providerSettings(), providerInput.parse(input));
+    return { settings, provider: providerFromEnv(settingsToEnv(settings, env)) };
+  };
+  app.get('/api/settings', (_request, response) => response.json(settingsView()));
+  app.put('/api/settings/provider', appOnly, async (request, response) => {
+    const next = candidateProvider(request.body);
+    await settingsFile.save(next.settings);
+    saved = next.settings; provider = next.provider; broker = new TranslationBroker(provider, store);
+    response.json(settingsView());
+  });
+  app.delete('/api/settings/provider', appOnly, async (_request, response) => {
+    const next = providerFromEnv(env);
+    await settingsFile.save(undefined);
+    saved = undefined; provider = next; broker = new TranslationBroker(provider, store);
+    response.json(settingsView());
+  });
+  // Tries unsaved choices with one real sentence, so mistakes surface before saving.
+  app.post('/api/settings/provider/test', appOnly, async (request, response) => {
+    const candidate = candidateProvider(request.body).provider;
+    if (!candidate.configured) { response.json({ ok: false, error: 'This service is not fully set up yet.' }); return; }
+    const targetLanguage = language.catch('zh-Hans').parse((request.body as { targetLanguage?: unknown }).targetLanguage);
+    const started = Date.now();
+    try {
+      const result = await new TranslationBroker(candidate, new MemoryCache(1)).translate({ segments: [{ id: 'test', text: 'Open tools make research reproducible.' }], targetLanguage }, AbortSignal.timeout(120_000));
+      if (!result.results[0]) throw new Error(result.errors[0]?.message ?? 'No translation was returned');
+      response.json({ ok: true, text: result.results[0].text, model: candidate.model, milliseconds: Date.now() - started });
+    } catch (error) { response.json({ ok: false, error: error instanceof Error ? error.message : 'The test translation failed' }); }
+  });
+  app.post('/api/settings/provider/models', appOnly, async (request, response) => {
+    const { settings } = candidateProvider(request.body);
+    try { response.json({ models: await listModels(settings, AbortSignal.timeout(6_000)) }); }
+    catch { response.json({ models: [] }); }
+  });
   app.post('/api/translate', async (request, response) => {
     const input = requestSchema.parse(request.body);
     if (input.segments.reduce((sum, segment) => sum + segment.text.length, 0) > 200_000) { response.status(400).json({ error: 'Request exceeds 200000 characters' }); return; }
@@ -76,9 +129,11 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
     const controller = new AbortController();
     if (!track(job, controller)) { response.status(429).json({ error: 'Too many active jobs' }); return; }
     response.status(202).json({ jobId: job.id });
+    // A job keeps the service it started with if the user switches meanwhile.
+    const jobBroker = broker;
     void (async () => {
       job.status = 'running';
-      const result = await broker.translate(input, controller.signal, snapshot => {
+      const result = await jobBroker.translate(input, controller.signal, snapshot => {
         if (controller.signal.aborted || job.status !== 'running') return;
         job.result = snapshot;
         job.completed = snapshot.results.length + snapshot.errors.length;
@@ -147,17 +202,18 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
     // Each job owns its result overlay. Late/cancelled jobs cannot mutate a saved translation.
     const initial = { ...(record.translations[input.targetLanguage]?.units || {}) };
     response.status(202).json({ jobId: job.id });
+    const jobBroker = broker, jobProvider = provider;
     void (async () => {
       job.status = 'running';
       const units = { ...initial };
       const failures: string[] = [];
       // Enough blocks per step for every parallel request to carry a full batch.
-      const batchSize = Math.max(1, Math.min(160, (provider.batch?.maxSegments ?? 8) * (provider.concurrency ?? 2)));
+      const batchSize = Math.max(1, Math.min(160, (jobProvider.batch?.maxSegments ?? 8) * (jobProvider.concurrency ?? 2)));
       for (let offset = 0; offset < blocks.length; offset += batchSize) {
         controller.signal.throwIfAborted();
         const batch = blocks.slice(offset, offset + batchSize);
         // Tables are sent cell by cell; every other block is one segment.
-        const result = await broker.translate({ ...input, context, segments: batch.flatMap(translationSegments) }, controller.signal);
+        const result = await jobBroker.translate({ ...input, context, segments: batch.flatMap(translationSegments) }, controller.signal);
         controller.signal.throwIfAborted();
         if (generations.get(translationKey) !== generation) throw new Error('Translation changed while this job was running; newer edits were preserved');
         const segments = new Map(result.results.map(item => [item.id, item.text]));
@@ -313,5 +369,5 @@ export async function createApp(options: { dataDir?: string; provider?: Provider
     if (status && status >= 500) console.error(error);
     response.status(status && status >= 400 && status < 600 ? status : 400).json({ error: error instanceof Error ? error.message : 'Request failed' });
   });
-  return { app, store, broker, jobs, close: () => { for (const controller of controllers.values()) controller.abort(new Error('Server shutting down')); mineru.close(); } };
+  return { app, store, get broker() { return broker; }, jobs, close: () => { for (const controller of controllers.values()) controller.abort(new Error('Server shutting down')); mineru.close(); } };
 }

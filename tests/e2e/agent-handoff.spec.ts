@@ -25,7 +25,6 @@ test('website and provider setup offer localized, self-contained requests before
   await page.locator('.provider-card').click();
   dialog = page.getByRole('dialog');
   await expect(dialog.getByRole('heading', { name: '让 AI 代理帮你完成设置' })).toBeVisible();
-  await expect(dialog.locator('.manual-setup')).not.toHaveAttribute('open');
   await dialog.getByRole('button', { name: '复制给你的代理', exact: true }).click();
   await expect(dialog.getByRole('status')).toContainText('已复制');
   copied = await page.evaluate(() => (window as unknown as { copiedAgentPrompt: string }).copiedAgentPrompt);

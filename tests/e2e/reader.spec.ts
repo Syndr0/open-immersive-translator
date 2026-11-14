@@ -53,7 +53,7 @@ test('mobile layout, settings and language changes remain usable', async ({ page
   await page.getByRole('button', { name: 'Close dialog', exact: true }).click();
   await page.getByRole('button', { name: 'Open library', exact: true }).click();
   await page.locator('.provider-card').click();
-  await expect(page.getByRole('heading', { name: 'Translation provider' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Translation service' })).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog')).toHaveCount(0);
   const noOverflow = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
